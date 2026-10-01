@@ -17,7 +17,7 @@ verified on a real Omni Xe 6W; see "Status of the evidence" for what is still pe
 * the per-machine focus calibration, which the factory stores **in the laser itself**, so users type
   nothing in;
 * a working, tested reference implementation that runs next to LightBurn today
-  (in this kit under `src/`, and at https://github.com/srm985/omni-xe-autofocus once public; MIT);
+  (in this kit under `src/`, and at https://github.com/srm985/omni-xe-autofocus; MIT);
 * the safety checks that a one-click Z move needs;
 * a hardware owner who is happy to test LightBurn beta builds.
 
@@ -60,10 +60,12 @@ alternative, and [integration-guide.md](integration-guide.md) has every byte for
 Verified on an Omni Xe 6W (USB `04B4:1004`, firmware as shipped in 2026): framing and checksums,
 state queries, the sensor pass-through and its "no target" value, Z moves (direction, 800 pulses/mm,
 position counter), the run-state requirement, the flash calibration read (including two quirks found
-only on hardware), and running alongside a connected LightBurn. Pending on hardware: a test burn
+only on hardware), running alongside a connected LightBurn, and the Windows app and installer around
+the engine (including fine-tuning with test burns). Pending on hardware: a LightBurn test burn
 confirming focus quality at the autofocused height (a first ladder test was inconclusive because the
-galvo's depth of field is generous), automatic lens switching via LightBurn profiles, and the
-Windows app around the engine. Not yet tested: the Omni X (non-Xe)
+galvo's depth of field is generous). Lens selection from outside LightBurn cannot follow profile
+switches, because LightBurn records its default device rather than the one in use; inside LightBurn
+the active profile is known, so this limitation does not apply. Not yet tested: the Omni X (non-Xe)
 and other Omni variants, which may use other focus heights (the calibration read handles that) or Z
 parameters (also in the calibration).
 
