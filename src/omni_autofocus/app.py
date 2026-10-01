@@ -217,21 +217,24 @@ def _beep(ok: bool) -> None:
         pass
 
 
-def _state_path() -> Path:
+def _state_path(simulate: bool = False) -> Path:
     base = os.environ.get("LOCALAPPDATA") or str(Path.home())
-    return Path(base) / "omni-autofocus" / "app-state.json"
+    name = (
+        "app-state-simulation.json" if simulate else "app-state.json"
+    )  # simulation never touches the real one
+    return Path(base) / "omni-autofocus" / name
 
 
-def _load_state() -> dict:
+def _load_state(simulate: bool = False) -> dict:
     try:
-        return json.loads(_state_path().read_text(encoding="utf-8"))
+        return json.loads(_state_path(simulate).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
 
-def _save_state(state: dict) -> None:
+def _save_state(state: dict, simulate: bool = False) -> None:
     try:
-        path = _state_path()
+        path = _state_path(simulate)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(state), encoding="utf-8")
     except OSError:
@@ -257,7 +260,7 @@ class App:
         self.hotkey: Hotkey | None = None
         self._hotkey_tried = False
         self.app_settings = config.AppSettings()
-        self.state = _load_state()
+        self.state = _load_state(simulate)
         self.lens_choice = "Auto"
         self._tone = INFO
         self.moving = False  # an operation that can move Z is running
@@ -384,7 +387,9 @@ class App:
                 "y": self.root.winfo_y(),
                 "on_top": self.on_top.get(),
                 "motion_fault": self.motion_fault,
-            }
+                "lens": self.lens_choice,
+            },
+            self.simulate,
         )
         self.root.destroy()
 
@@ -487,7 +492,7 @@ class App:
             ok, axis = event[1], event[2] if len(event) > 2 else None
             self.motion_fault = not ok
             self._verified_axis = axis if ok else None
-            _save_state({**_load_state(), "motion_fault": self.motion_fault})
+            _save_state({**_load_state(self.simulate), "motion_fault": self.motion_fault}, self.simulate)
         elif kind == "idle":
             self.busy = False
             self.moving = False

@@ -127,11 +127,9 @@ def validate(s: Settings) -> Settings:
     f, z = s.focus, s.z_axis
     _check(f.lens.lower() in ("auto", "a", "b"), "focus.lens must be auto, a or b")
     _check(0 < f.sensor_min_mm < f.sensor_max_mm <= 1000, "focus.sensor_min_mm < focus.sensor_max_mm")
-    for key in ("target_a_mm", "target_b_mm"):
-        _check(
-            f.sensor_min_mm <= getattr(f, key) <= f.sensor_max_mm,
-            f"focus.{key} must be within the sensor range {f.sensor_min_mm:g}-{f.sensor_max_mm:g} mm",
-        )
+    # Each lens's focus height is checked against the sensor range when it is used (autofocus.plan):
+    # a laser may store a placeholder for a lens that is not fitted.
+    _check(f.target_a_mm >= 0 and f.target_b_mm >= 0, "focus.target_a_mm / target_b_mm must be >= 0")
     _check(f.field_a_mm > 0 and f.field_b_mm > 0, "focus.field_a_mm / field_b_mm must be > 0")
     _check(abs(f.offset_mm) <= 20, "focus.offset_mm must be between -20 and 20")
     _check(0 <= f.deadband_mm <= 2, "focus.deadband_mm must be between 0 and 2")
@@ -141,7 +139,7 @@ def validate(s: Settings) -> Settings:
     _check(z.pitch_pulse > 0 and z.screw_pitch > 0, "z_axis.pitch_pulse and screw_pitch must be > 0")
     _check(z.run_speed > 0 and z.acc_speed > 0 and z.max_run_speed > 0, "z_axis speeds must be > 0")
     _check(z.start_speed >= 0 and z.gear_ratio > 0, "z_axis.start_speed >= 0, gear_ratio > 0")
-    _check(s.app.confirm_down_above_mm >= 0, "app.confirm_down_above_mm must be >= 0")
+    _check(0 <= s.app.confirm_down_above_mm <= 60, "app.confirm_down_above_mm must be between 0 and 60")
     return s
 
 

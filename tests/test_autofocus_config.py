@@ -470,7 +470,7 @@ def test_settings_ranges_are_enforced(tmp_path):
         "[focus]\nmax_move_mm = nan\n",
         "[focus]\nmax_move_mm = 0.0\n",
         "[focus]\nsamples = 0\n",
-        "[focus]\ntarget_b_mm = 35.0\n",
+        "[focus]\ntarget_b_mm = -1.0\n",
         "[z_axis]\npitch_pulse = -3200\n",
         "[app]\nconfirm_down_above_mm = inf\n",
     ):
@@ -491,8 +491,8 @@ def test_cli_asks_again_before_a_large_second_downward_move(monkeypatch):
     ctl = Controller(board, sleep=clock.sleep, clock=clock)
     real_move = Controller.move_axis
 
-    def overshoot(self, params, pulses, **kw):  # every move travels 45 % too far
-        return real_move(self, params, int(pulses * 1.45))
+    def overshoot(self, params, pulses, **kw):  # the long move (not the 3 mm probe) travels 45 % too far
+        return real_move(self, params, int(pulses * 1.45) if abs(pulses) > 2400 else pulses)
 
     monkeypatch.setattr(Controller, "move_axis", overshoot)
     asked = []
@@ -501,3 +501,74 @@ def test_cli_asks_again_before_a_large_second_downward_move(monkeypatch):
     cli._autofocus(ctl, s, passes=2, dry_run=False, yes=False)
     # first move up (+40 mm), then the overshoot needs a large move down: asked both times
     assert len(asked) == 2 and "+40.0 mm" in asked[0] and asked[1].startswith("Move the Z axis -")
+
+
+def test_focus_height_outside_the_sensor_range_only_blocks_that_lens(tmp_path):
+    from omni_autofocus import autofocus
+
+    s = config.Settings(focus=config.FocusSettings(target_a_mm=0.0))  # placeholder for an unfitted lens
+    config.validate(s)
+    b = replace(s, focus=replace(s.focus, lens="b"))
+    assert autofocus.plan(205.0, b).move_mm == pytest.approx(17.0)
+    a = replace(s, focus=replace(s.focus, lens="a"))
+    with pytest.raises(autofocus.FocusError, match="outside the"):
+        autofocus.plan(205.0, a)
+    off = replace(s, focus=replace(s.focus, lens="b", offset_mm=-20.0, target_b_mm=121.0))
+    with pytest.raises(autofocus.FocusError, match="offset included"):
+        autofocus.plan(205.0, off)
+
+
+def test_probe_with_wrong_pitch_stops_before_the_long_move():
+    from omni_autofocus import autofocus
+    from omni_autofocus.controller import Controller
+    from omni_autofocus.simulator import FakeClock, SimulatedBoard
+
+    board = SimulatedBoard(sensor_mm=182.0, z_pulses_per_mm=800 / 1.45)  # settings say 800, really 552
+    clock = FakeClock()
+    ctl = Controller(board, sleep=clock.sleep, clock=clock)
+    s = replace(config.Settings(), focus=replace(config.Settings().focus, lens="b"))
+    with pytest.raises(autofocus.MotionError, match="pitch"):
+        autofocus.run(ctl, s)
+    assert board.sensor_mm == pytest.approx(182.0 + 3 * 1.45, abs=0.01)  # only the probe ran
+
+
+def test_reading_failure_after_a_move_is_a_motion_fault(monkeypatch):
+    from omni_autofocus import autofocus
+    from omni_autofocus.controller import Controller, SensorNoTargetError
+    from omni_autofocus.simulator import FakeClock, SimulatedBoard
+
+    board = SimulatedBoard(sensor_mm=205.0)
+    clock = FakeClock()
+    ctl = Controller(board, sleep=clock.sleep, clock=clock)
+    real_read = Controller.read_height_median
+    calls = {"n": 0}
+
+    def read(self, samples=3):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise SensorNoTargetError("no surface")
+        return real_read(self, samples)
+
+    monkeypatch.setattr(Controller, "read_height_median", read)
+    s = replace(config.Settings(), focus=replace(config.Settings().focus, lens="b"))
+    with pytest.raises(autofocus.MotionError, match="could not measure"):
+        autofocus.run(ctl, s)
+
+
+def test_cli_survives_unencodable_output(monkeypatch, capsys):
+    import io
+    import sys
+
+    from omni_autofocus import cli
+
+    raw = io.BytesIO()
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(raw, encoding="cp1252"))
+    assert cli.main(["--simulate", "--lens", "b", "focus", "--dry-run"]) == 0
+    sys.stdout.write("⋯")  # would raise UnicodeEncodeError without errors="replace"
+    sys.stdout.flush()
+
+
+def test_focus_rejects_zero_passes(capsys):
+    from omni_autofocus import cli
+
+    assert cli.main(["--simulate", "--lens", "b", "focus", "--passes", "0"]) == 2

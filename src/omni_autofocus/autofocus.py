@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .config import Settings
+from .controller import ControllerError
 
 
 class FocusError(RuntimeError):
@@ -34,6 +35,12 @@ def plan(height_mm: float, settings: Settings) -> FocusPlan:
             f"{f.sensor_min_mm:g}-{f.sensor_max_mm:g} mm (is something under the sensor?)"
         )
     target = f.target_mm
+    if not f.sensor_min_mm <= target <= f.sensor_max_mm:
+        raise FocusError(
+            f"the focus height for lens {f.lens.upper()} ({target:.1f} mm, offset included) is outside the "
+            f"sensor range {f.sensor_min_mm:g}-{f.sensor_max_mm:g} mm; set it with set-focus or "
+            "fine-tuning, or check focus.offset_mm"
+        )
     move = target - height_mm
     if abs(move) < f.deadband_mm:
         return FocusPlan(height_mm, target, 0.0, 0)
@@ -89,12 +96,16 @@ def is_large_downward(p: FocusPlan, threshold_mm: float) -> bool:
     return p.move_mm < -abs(threshold_mm)
 
 
-def check_motion(move_mm: float, change_mm: float, *, inverted: bool = False) -> None:
+def check_motion(move_mm: float, change_mm: float, *, inverted: bool = False, strict: bool = False) -> None:
     """Raise :class:`MotionError` unless the sensor reading changed roughly as much as Z was told to
-    move, the same way. Sensor noise is about +-0.2 mm, so small moves can never trip it."""
+    move, the same way. Sensor noise is about +-0.2 mm, so small moves can never trip it. ``strict``
+    (for the probe step) allows 20 % instead of 50 % scale error, so a wrong pitch is caught before
+    the long part of a move."""
+    slack = 0.2 if strict else 0.5
+    noise = 0.3 if strict else 0.5
     wrong_way = move_mm * change_mm < 0 and abs(change_mm) > 0.5
-    too_little = abs(change_mm) < 0.5 * abs(move_mm) - 0.5
-    too_much = abs(change_mm) > 1.5 * abs(move_mm) + 0.5
+    too_little = abs(change_mm) < (1 - slack) * abs(move_mm) - noise
+    too_much = abs(change_mm) > (1 + slack) * abs(move_mm) + noise
     if not (wrong_way or too_little or too_much):
         return
     msg = (
@@ -103,8 +114,8 @@ def check_motion(move_mm: float, change_mm: float, *, inverted: bool = False) ->
     )
     if wrong_way:
         raise MotionError(
-            msg + ". If Z moved the opposite way, open the settings file (app: ⋯ menu > Open settings "
-            f"file) and set z_axis.invert_direction = {str(not inverted).lower()}"
+            msg + ". If Z moved the opposite way, open the settings file (in the app: ... menu > Open "
+            f"settings file) and set z_axis.invert_direction = {str(not inverted).lower()}"
         )
     raise MotionError(msg + " (stall, end of travel, or wrong z_axis pitch settings)")
 
@@ -134,11 +145,17 @@ def run(
     plans: list[FocusPlan] = []
     verified = False
 
-    def move(mm: float, pulses: int, start_height: float) -> float:
+    def move(mm: float, pulses: int, start_height: float, *, strict: bool = False) -> float:
         nonlocal verified
         ctl.move_axis(params, pulses)
-        new_height = ctl.read_height_median(samples)
-        check_motion(mm, new_height - start_height, inverted=inverted)
+        try:
+            new_height = ctl.read_height_median(samples)
+        except ControllerError as e:  # e.g. the head left the sensor's range: Z went somewhere unexpected
+            raise MotionError(
+                f"after moving Z {mm:+.1f} mm the sensor could not measure ({e}). Stopped; check where the "
+                "head is and whether z_axis.invert_direction is right"
+            ) from e
+        check_motion(mm, new_height - start_height, inverted=inverted, strict=strict)
         verified = verified or abs(mm) >= 1.0
         return new_height
 
@@ -168,9 +185,10 @@ def run(
                 )
         if probe and not verified and abs(p.move_mm) > PROBE_MM + 1.0:
             step = PROBE_MM if p.move_mm > 0 else -PROBE_MM
-            step_pulses = params.mm_to_pulses(step)
-            height = move(step, step_pulses, height)
-            height = move(p.move_mm - step, p.pulses - step_pulses, height)
+            height = move(step, params.mm_to_pulses(step), height, strict=True)
+            rest = plan(height, settings)  # re-plan from the measured height, not the commanded one
+            if rest.needed:
+                height = move(rest.move_mm, rest.pulses, height)
         else:
             height = move(p.move_mm, p.pulses, height)
     target = settings.focus.target_mm

@@ -45,9 +45,23 @@ def _read_laser_calibration(ctl: Controller) -> dict:
     return session.read_laser_calibration(ctl)
 
 
+def _accept_calibration(args):
+    """First use: show the focus heights found and ask before saving them (simulation: just show)."""
+
+    def accept(found: config.Settings, source: str) -> bool:
+        f = found.focus
+        heights = f"lens A {f.target_a_mm:.1f} mm, lens B {f.target_b_mm:.1f} mm"
+        print(f"First use: focus heights from {source}: {heights}")
+        if _SESSION.simulate:
+            return True
+        return _confirm(f"Use them and save them to {_SESSION.path}?", getattr(args, "yes", False))
+
+    return accept
+
+
 def _settings(args, *, calibrate: bool = False) -> config.Settings:
     """Settings from the file; with ``calibrate`` a missing file is created from the factory calibration."""
-    s, note = _SESSION.settings(calibrate=calibrate)
+    s, note = _SESSION.settings(calibrate=calibrate, accept=_accept_calibration(args))
     if note:
         print(note)
     return s
@@ -55,7 +69,7 @@ def _settings(args, *, calibrate: bool = False) -> config.Settings:
 
 def _settings_with_lens(args) -> config.Settings:
     """Settings with the lens resolved (explicit, LightBurn, then ComMarker); prints the choice."""
-    s, why, note = _SESSION.settings_with_lens()
+    s, why, note = _SESSION.settings_with_lens(accept=_accept_calibration(args))
     if note:
         print(note)
     print(f"Using {why}: focus at sensor reading {s.focus.target_mm:.1f} mm")
@@ -174,6 +188,9 @@ def _try_height(ctl: Controller) -> float | None:
 
 
 def cmd_focus(args) -> int:
+    if args.passes < 1:
+        print("--passes must be at least 1.")
+        return 2
     _check_other_software(args.force)
     s = _settings_with_lens(args)
     dev, ctl = _open_controller()
@@ -264,7 +281,7 @@ def cmd_focus_ladder(args) -> int:
         return 1
     dev, ctl = _open_controller()
     with dev:
-        code = _autofocus(ctl, s, passes=2, dry_run=False, yes=True)
+        code = _autofocus(ctl, s, passes=2, dry_run=False, yes=args.yes)
         if code:
             return code
         reference = ctl.read_height_median(s.focus.samples)
@@ -625,6 +642,9 @@ def _pause(code: int) -> None:
 
 def _run(argv: list[str]) -> int:
     global _SESSION
+    for stream in (sys.stdout, sys.stderr):  # never fail on a character the console cannot show
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     args = build_parser().parse_args(argv)
     if args.simulate and not args.config:
         # Never let the simulator's calibration or test runs touch the real settings file.
@@ -639,6 +659,9 @@ def _run(argv: list[str]) -> int:
     logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
     try:
         return args.func(args)
+    except session.NotAccepted:
+        print("Not saved; nothing moved.", file=sys.stderr)
+        return 1
     except (ControllerError, autofocus.FocusError, OSError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1

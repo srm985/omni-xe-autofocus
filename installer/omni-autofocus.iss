@@ -28,7 +28,8 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; A running app is asked to close first (see the Code section); this is the fallback for anything else.
+; Setup refuses while any Omni Autofocus program uses the laser and asks a running app to close
+; (see the Code section). After that, closing what is left (e.g. an idle console window) is safe.
 CloseApplications=yes
 
 [Tasks]
@@ -79,20 +80,25 @@ begin
   Result := ResultCode = 0;
 end;
 
+{ Refuse while any Omni Autofocus program uses the laser: closing it mid-run (e.g. fine-tuning)
+  would leave Z away from focus. }
+function LaserInUse(): Boolean;
+begin
+  Result := CheckForMutexes(LaserMutexName);
+  if Result then
+    SuppressibleMsgBox('Omni Autofocus is using the laser right now (autofocus or fine-tuning). ' +
+      'Let it finish, then try again.', mbError, MB_OK, IDOK);
+end;
+
 { Ask a running app to close (like clicking its X: it refuses while Z is moving) and wait for it. }
 function CloseRunningApp(): Boolean;
 var
   ResultCode, I: Integer;
 begin
-  Result := True;
-  if CheckForMutexes(LaserMutexName) and not CheckForMutexes(AppMutexName) then
-  begin
-    { the command-line tool is using the laser, e.g. fine-tuning: closing it would leave Z offset }
-    Result := False;
-    SuppressibleMsgBox('Omni Autofocus is using the laser (fine-tuning?). Finish there, then try again.',
-      mbError, MB_OK, IDOK);
+  Result := False;
+  if LaserInUse() then
     Exit;
-  end;
+  Result := True;
   if not CheckForMutexes(AppMutexName) and not AppProcessRunning() then
     Exit;
   Log('Omni Autofocus is running: asking it to close');
@@ -103,6 +109,7 @@ begin
     if not CheckForMutexes(AppMutexName) and not AppProcessRunning() then
     begin
       Log('Omni Autofocus has closed');
+      Result := not LaserInUse();  { a fine-tuning window started from the app may still run }
       Exit;
     end;
     Sleep(200);
