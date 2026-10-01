@@ -284,6 +284,7 @@ class App:
         self.moving = False  # an operation that can move Z is running
         self.hotkey: Hotkey | None = None
         self._hotkey_tried = False
+        self.hotkey_text = ""  # e.g. "Ctrl + Alt + F" once registered
         self.app_settings = config.AppSettings()
         self.state = _load_state(simulate)
         saved_lens = self.state.get("lens")
@@ -465,6 +466,7 @@ class App:
         self.hotkey.ready.wait(1.0)
         keys = " + ".join(k.strip().title() for k in app.hotkey.split("+"))
         if self.hotkey.ok:
+            self.hotkey_text = keys
             self.hint.configure(text=f"or press {keys} anywhere")
         else:
             self.hotkey = None
@@ -482,6 +484,7 @@ class App:
         self.busy = True
         self.moving = moves
         self.button.set_enabled(False)
+        self.t_button.set_enabled(False)
         if moves:
             self.lens_picker.set_enabled(False)
         self._set_dot(BUSY)
@@ -544,14 +547,24 @@ class App:
             if self.app_settings.sounds:
                 _beep(event[1])
         elif kind == "hotkey":
-            if self.tune is not None:
-                self._tune_primary()  # while fine-tuning the hotkey means Start / Next
-            else:
+            if self.tune is None:
                 self.autofocus()
+            elif self.tune["stage"] == "burn":
+                self._tune_primary()  # while burning marks the hotkey means Next
+            else:
+                self._set_detail(
+                    "Press Start in this window to begin."
+                    if self.tune["stage"] == "intro"
+                    else "Pick the marks, then Save or Done."
+                )
+                if self.app_settings.sounds:
+                    _beep(False)
         elif kind == "tune_started" and self.tune is not None:
             _, dev, run, settings = event
             self.tune.update(dev=dev, run=run, settings=settings, stage="burn", index=0)
             self._tune_render()
+        elif kind == "tune_pending" and self.tune is not None:
+            self.tune["pending"] = event[1]
         elif kind == "tune_step" and self.tune is not None:
             self.tune["index"] = event[1]
             self._tune_render()
@@ -574,10 +587,14 @@ class App:
             self.button.set_enabled(True)
             self.lens_picker.set_enabled(True)
             self._set_dot(self._tone)
-            target = (
-                self.t_button if self.tune is not None and self.tune["stage"] != "result" else self.button
-            )
-            if self.root.focus_get() in (None, self.button, self.t_button):
+            self.t_button.set_enabled(True)
+            if self.tune is None:
+                target = self.button
+            elif self.tune["stage"] == "result":
+                target = self.t_save if self.t_save.enabled else self.t_stop
+            else:
+                target = self.t_button
+            if self.root.focus_get() in (None, self.button, self.t_button, self.t_save):
                 target.focus_set()
             if self._lens_dirty:  # the lens was changed while busy: refresh the lens line now
                 self._lens_dirty = False
@@ -822,7 +839,6 @@ class App:
         if t is None:
             return
         stage = t["stage"]
-        hotkey = self.hint.cget("text").startswith("or press")
         if stage == "result":
             self.t_steps.pack_forget()
             self.t_result.pack(fill="x", before=self.t_stop)
@@ -850,7 +866,9 @@ class App:
             self._set_status("Pick the best marks", INFO)
             self._set_detail("Compare the marks with a loupe or a zoomed photo.")
             self._tune_outcome()
-        self.t_hint.configure(text="or press Ctrl + Alt + F" if hotkey and stage != "result" else " ")
+        self.t_hint.configure(
+            text=f"or press {self.hotkey_text} in LightBurn" if self.hotkey_text and stage == "burn" else " "
+        )
         self._draw_dots()
 
     def _draw_dots(self) -> None:
@@ -873,6 +891,8 @@ class App:
             return
         if t["stage"] == "intro":
             self._start(self._tune_begin, moves=True, tune=True)
+        elif t["stage"] == "burn" and t.get("pending"):
+            self._start(self._tune_approach, t["run"], moves=True, tune=True)
         elif t["stage"] == "burn":
             if t["index"] not in t["burned"]:
                 t["burned"].append(t["index"])
@@ -909,13 +929,15 @@ class App:
         )
         if not ok:
             text = f"{new:.1f} mm is outside the sensor range; check the marks again."
-        elif abs(new - old) < 0.1:
+        elif round(new - old, 1) == 0:
             text = f"Best focus is where autofocus already goes ({old:.1f} mm).{edge}"
         else:
             heights = f"lens {f.lens.upper()} focus height {old:.1f} → {new:.1f} mm"
             text = f"Best focus {centre:+.1f} mm → {heights}.{edge}"
+        if f.offset_mm:
+            text += f" focus.offset_mm ({f.offset_mm:+g} mm) stays on top."
         self.t_outcome.configure(text=text)
-        change = ok and abs(new - old) >= 0.1
+        change = ok and round(new - old, 1) != 0
         self.t_save.set_text(f"Save {new:.1f} mm" if change else "Nothing to save")
         self.t_save.set_enabled(change)
         self.t_stop.configure(text="Keep the current focus height" if change else "Done")
@@ -945,7 +967,13 @@ class App:
         self._post("status", "Autofocus first…", BUSY)
         self._post("detail", "Reading the height sensor…")
         s = self._settings()
+        if ladder.reach_mm(TUNE_OFFSETS) > s.focus.max_move_mm:  # before anything moves
+            raise autofocus.FocusError(
+                f"fine-tuning needs {ladder.reach_mm(TUNE_OFFSETS):g} mm of travel but focus.max_move_mm is "
+                f"{s.focus.max_move_mm:g}"
+            )
         dev, ctl = self._session.open()  # held until fine-tuning ends: no other program can move Z
+        run = None
         try:
             result = autofocus.run(
                 ctl, s, passes=2, confirm=self._confirmer(s), on_plan=self._on_plan,
@@ -959,13 +987,28 @@ class App:
                 raise autofocus.FocusError(describe_result(result)[1].rstrip("."))
             run = ladder.Ladder(ctl, s, list(TUNE_OFFSETS))
             run.measure_reference()
-            self._post("status", f"Moving to {fmt_offset(TUNE_OFFSETS[0])} mm…", BUSY)
-            run.go_to(TUNE_OFFSETS[0])
         except BaseException:
             dev.__exit__(None, None, None)
             self._post("tune_end")
             raise
         self._post("tune_started", dev, run, s)
+        self._tune_approach(run)
+
+    def _tune_approach(self, run: ladder.Ladder) -> None:
+        """Go to the first mark (two moves: below it, then up into it). Busy keeps the run open."""
+        try:
+            self._post("status", f"Moving to {fmt_offset(run.offsets[0])} mm…", BUSY)
+            run.go_to(run.offsets[0])
+        except ControllerBusyError:
+            self._post("tune_pending", True)
+            self._post("status", "Laser busy", WARN)
+            self._post("detail", "LightBurn is using the laser. When it is free, press Next to continue.")
+            return
+        except Exception as e:  # noqa: BLE001 - reported with where Z is
+            self._tune_failed(e, run)
+            return
+        self._post("tune_pending", False)
+        self._post("tune_step", 0)
 
     def _tune_advance(self, run: ladder.Ladder, index: int) -> None:
         try:
@@ -982,9 +1025,8 @@ class App:
             self._post(
                 "detail", "LightBurn is still using the laser. When the mark is done, press Next again."
             )
-        except BaseException:
-            self._post("tune_end")
-            raise
+        except Exception as e:  # noqa: BLE001 - reported with where Z is
+            self._tune_failed(e, run)
 
     def _tune_stop(self, run: ladder.Ladder) -> None:
         try:
@@ -994,12 +1036,28 @@ class App:
             self._post("status", "Laser busy", WARN)
             self._post("detail", "LightBurn is still using the laser. Stop it, then press Stop again.")
             return
-        except BaseException:
-            self._post("tune_end")
-            raise
+        except Exception as e:  # noqa: BLE001 - reported with where Z is
+            self._tune_failed(e, run)
+            return
         self._post("tune_end")
         self._post("status", "Ready", INFO)
         self._post("detail", "Fine-tuning stopped. Z is back at the focus height.")
+
+    def _tune_failed(self, e: Exception, run: ladder.Ladder) -> None:
+        """End fine-tuning after a fault without moving Z again, and say where Z was left."""
+        log.debug("fine-tuning failed", exc_info=True)
+        if isinstance(e, autofocus.MotionError):
+            self._post("motion", False)
+        self._post("tune_end")
+        where = (
+            f" Z is about {fmt_offset(run.current)} mm from the focus height; check the Z axis, then press "
+            "Autofocus."
+            if run.current
+            else ""
+        )
+        self._post("status", "Stopped", ERR)
+        self._post("detail", describe_error(e) + where)
+        self._post("beep", False)
 
     def _confirmer(self, s: config.Settings):
         """The app's confirmation rule for a focus run (worker thread)."""

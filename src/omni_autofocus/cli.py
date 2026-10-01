@@ -260,6 +260,7 @@ def cmd_focus_ladder(args) -> int:
         reference = run.measure_reference()
         print(f"Reference (offset 0): sensor reading {reference:.3f} mm")
         burned: list[float] = []
+        faulted = False
         try:
             for offset in offsets:
                 _when_free(lambda o=offset: run.go_to(o))
@@ -270,13 +271,19 @@ def cmd_focus_ladder(args) -> int:
                 if answer.strip().lower() == "q":
                     break
                 burned.append(offset)
+        except autofocus.MotionError:
+            faulted = True  # do not move Z again after a fault
+            print(f"Z is about {run.current:+g} mm from the autofocus height; not moving it again.")
+            raise
         finally:
-            if run.current:
+            if run.current and not faulted:
                 print(f"Returning Z to the autofocus height ({-run.current:+g} mm).")
                 try:
                     _when_free(run.return_to_focus)
                 except _LeftInPlace:
                     print(f"Z left at {run.current:+g} mm from focus; run 'omni-autofocus focus' to return.")
+                except autofocus.MotionError as e:
+                    print(f"Could not return Z ({e}); it is about {run.current:+g} mm from focus.")
     if len(burned) < 2:
         return 0
     return _dial_in(args, s, burned, reference)
@@ -336,7 +343,7 @@ def _dial_in(args, s: config.Settings, burned: list[float], reference: float) ->
     lens_key = s.focus.lens.lower()
     old_target = s.focus.target_b_mm if lens_key == "b" else s.focus.target_a_mm
     print(f"Good range {lo:+g} .. {hi:+g} mm -> centre {centre:+g} mm from the autofocus height.")
-    if abs(new_target - old_target) < 0.1:
+    if round(new_target - old_target, 1) == 0:
         print(f"Lens {lens_key.upper()} focus height {old_target:.1f} mm is already centred.")
         return 0
     _save_focus_target(args, lens_key, old_target, new_target, yes=False)
@@ -623,7 +630,10 @@ def _run(argv: list[str]) -> int:
     except session.NotAccepted:
         print("Not saved; nothing moved.", file=sys.stderr)
         return 1
-    except (ControllerError, autofocus.FocusError, OSError, ValueError) as e:
+    except autofocus.FocusError as e:  # refused, or Z did not follow a move (README: exit code 2)
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    except (ControllerError, OSError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

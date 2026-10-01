@@ -640,3 +640,27 @@ def test_usb_failure_mid_move_is_a_motion_fault(monkeypatch):
     monkeypatch.setattr(Controller, "move_axis", lost)
     with pytest.raises(autofocus.MotionError, match="did not complete"):
         autofocus.run(ctl, _lens_b())
+
+
+def test_cli_ladder_does_not_move_again_after_a_motion_fault(monkeypatch, capsys):
+    from omni_autofocus import cli, ladder
+    from omni_autofocus.autofocus import MotionError
+
+    real_go_to = ladder.Ladder.go_to
+    moves = {"returns": 0}
+
+    def go_to(self, offset):
+        if offset == 1.0:
+            self.current = 1.0
+            raise MotionError("Z did not complete a +1.0 mm move")
+        return real_go_to(self, offset)
+
+    def count_return(self):
+        moves["returns"] += 1
+
+    monkeypatch.setattr(ladder.Ladder, "go_to", go_to)
+    monkeypatch.setattr(ladder.Ladder, "return_to_focus", count_return)
+    monkeypatch.setattr(cli, "_prompt", lambda text: "")
+    assert cli.main(["--simulate", "--lens", "b", "focus-ladder", "--yes", "--offsets", "0,1,2"]) == 2
+    out = capsys.readouterr()
+    assert moves["returns"] == 0 and "not moving it again" in out.out

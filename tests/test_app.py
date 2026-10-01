@@ -354,3 +354,59 @@ def test_fine_tune_waits_while_lightburn_is_busy(window, monkeypatch):
     window._tune_secondary()
     settle(window)
     assert window.tune is None
+
+
+def test_fine_tune_fault_reports_where_z_is_and_moves_nothing_more(window, monkeypatch):
+    from omni_autofocus.controller import Controller, SensorNoTargetError
+
+    board = board_of(window)
+    start_tune(window)
+    real_read = Controller.read_height_median
+
+    def no_target(self, samples=3):
+        raise SensorNoTargetError("no surface")
+
+    monkeypatch.setattr(Controller, "read_height_median", no_target)
+    lists_before = len(board.lists)
+    window._tune_primary()  # Next: moves to -3, then the reading fails
+    settle(window)
+    monkeypatch.setattr(Controller, "read_height_median", real_read)
+    assert window.tune is None and window.status.cget("text") == "Stopped"
+    assert "Z is about −3 mm from the focus height" in window.detail.cget("text")
+    assert len(board.lists) == lists_before + 1  # the one step, no automatic return
+    window.motion_fault = False
+    window._verified_axis = None
+    board.sensor_mm = 205.0
+
+
+def test_fine_tune_busy_during_the_approach_keeps_the_run(window, monkeypatch):
+    from omni_autofocus import ladder
+    from omni_autofocus.controller import ControllerBusyError
+
+    board = board_of(window)
+    real_move = ladder.Ladder._move
+    armed = {"up": True}
+
+    def busy_on_the_way_up(self, mm):  # the approach is -5 mm, then +1 mm: fail the second half once
+        if armed["up"] and mm > 0:
+            armed["up"] = False
+            raise ControllerBusyError("busy")
+        return real_move(self, mm)
+
+    monkeypatch.setattr(ladder.Ladder, "_move", busy_on_the_way_up)
+    window.open_fine_tune()
+    window.events.put(("hotkey",))  # the hotkey does not start a run from the intro
+    settle(window)
+    assert window.tune["stage"] == "intro" and "Press Start" in window.detail.cget("text")
+    window._tune_primary()
+    settle(window)
+    reference = window.tune["run"].reference
+    assert window.tune.get("pending") and window.status.cget("text") == "Laser busy"
+    assert board.sensor_mm == pytest.approx(reference - 5.0, abs=0.01)  # below the first mark, run kept
+    window._tune_primary()  # Next retries the approach
+    settle(window)
+    assert not window.tune.get("pending") and window.tune["index"] == 0
+    assert board.sensor_mm == pytest.approx(reference - 4.0, abs=0.01)
+    window._tune_secondary()
+    settle(window)
+    assert window.tune is None and board.sensor_mm == pytest.approx(reference, abs=0.01)
