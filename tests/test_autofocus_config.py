@@ -279,3 +279,61 @@ def test_cli_focus_ladder_stop_early_still_returns(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_prompt", lambda text: next(answers))
     assert cli.main(["--simulate", "--lens", "b", "focus-ladder", "--yes", "--offsets", "0,-1,-2"]) == 0
     assert "Returning Z to the autofocus height (+1 mm)" in capsys.readouterr().out
+
+
+# --- manual calibration: set-focus and config set ----------------------------------------------------
+
+
+def run(*argv):
+    from omni_autofocus.cli import main
+
+    return main(["--simulate", *argv])
+
+
+def test_set_focus_typed_value(tmp_path, capsys):
+    cfg = tmp_path / "s.toml"
+    assert run("--config", str(cfg), "--lens", "b", "set-focus", "223.4", "-y") == 0
+    saved = config.load(cfg)
+    assert saved.focus.target_b_mm == 223.4 and saved.focus.target_a_mm == 181.0
+    assert saved.focus.lens == "auto"
+
+
+def test_set_focus_here_measures_current_height(tmp_path, capsys):
+    cfg = tmp_path / "s.toml"
+    assert run("--config", str(cfg), "--lens", "a", "set-focus", "--here", "-y") == 0
+    assert "Measured sensor reading at the current Z: 205.000 mm" in capsys.readouterr().out
+    assert config.load(cfg).focus.target_a_mm == 205.0
+
+
+def test_set_focus_factory_restores_laser_value(tmp_path):
+    cfg = tmp_path / "s.toml"
+    assert run("--config", str(cfg), "--lens", "b", "set-focus", "230", "-y") == 0
+    assert run("--config", str(cfg), "--lens", "b", "set-focus", "--factory", "-y") == 0
+    assert config.load(cfg).focus.target_b_mm == 222.0
+
+
+def test_set_focus_rejects_out_of_range_and_ambiguous(tmp_path, capsys):
+    cfg = tmp_path / "s.toml"
+    assert run("--config", str(cfg), "--lens", "b", "set-focus", "30", "-y") == 2
+    assert "not a lens-to-work distance" in capsys.readouterr().out
+    assert run("--config", str(cfg), "--lens", "b", "set-focus", "222", "--here") == 2
+
+
+def test_set_focus_asks_before_saving(tmp_path, monkeypatch):
+    from omni_autofocus import cli
+
+    cfg = tmp_path / "s.toml"
+    monkeypatch.setattr(cli, "_prompt", lambda text: "n")
+    assert run("--config", str(cfg), "--lens", "b", "set-focus", "224") == 0
+    assert config.load(cfg).focus.target_b_mm == 222.0  # first-run calibration only
+
+
+def test_config_set_values_and_validation(tmp_path):
+    cfg = tmp_path / "c.toml"
+    assert run("--config", str(cfg), "config", "set", "focus.offset_mm", "0.3") == 0
+    assert run("--config", str(cfg), "config", "set", "z_axis.invert_direction", "true") == 0
+    assert run("--config", str(cfg), "config", "set", "focus.lens", "a") == 0
+    s = config.load(cfg)
+    assert s.focus.offset_mm == 0.3 and s.z_axis.invert_direction is True and s.focus.lens == "a"
+    assert run("--config", str(cfg), "config", "set", "focus.offset", "1") == 1  # typo -> error
+    assert run("--config", str(cfg), "config", "set", "focus.lens", "c") == 1

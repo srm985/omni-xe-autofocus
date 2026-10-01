@@ -28,6 +28,7 @@ omni-autofocus height -n 5          # read the sensor (no motion)
 omni-autofocus move-z 2.5           # relative Z move in mm (positive = larger sensor reading)
 omni-autofocus status               # controller state and Z position counter
 omni-autofocus calibration          # show the factory calibration stored in the laser
+omni-autofocus set-focus --here     # make the current Z height this lens's focus (also: VALUE, --factory)
 omni-autofocus --simulate focus     # try everything against a built-in simulator
 ```
 
@@ -46,23 +47,35 @@ prints its choice on every run:
    in LightBurn switches the focus height.
 3. Otherwise ComMarker Studio's lens setting ("Galvo B").
 
-## Dialling in focus
-
-The factory focus heights are usually right (ComMarker writes them on a card that ships with the
-machine). To fine-tune, run `omni-autofocus focus-ladder` with LightBurn connected. After autofocus it
-steps Z from −4 to +4 mm, always moving up into each position so lead-screw slack does not skew
-the result, and pauses so you can burn the same small test design at each height. Use the lowest
-power that still marks: out-of-focus marks then fade, so the edges of the good range are easy to see.
-Finally it asks for the lowest and highest label that still looked good, and offers to save the
-middle of that range as the lens's new focus height.
-
-## Calibration from the laser
+## Calibration
 
 Each Omni's focus heights are measured at the factory and stored **in the laser's controller**,
 along with its lens and Z-axis parameters. On first use the tool reads them from the laser and saves
-them to its settings file, so there is nothing to type in. `omni-autofocus calibration` shows what
-the laser has stored and how it compares with your settings; `--save` adopts the laser's values. If
-the laser's store can't be read, the tool falls back to an installed ComMarker Studio's settings.
+them to its settings file, so there is nothing to type in. (If the laser's store can't be read, it
+falls back to an installed ComMarker Studio's settings.) The factory values are usually right:
+ComMarker also writes them on a card that ships with the machine.
+
+To change the focus height of the lens in use, pick whichever suits you. Every option shows
+old → new and asks before saving, and only the settings file on your PC changes, never the laser.
+
+| Situation | Command |
+|---|---|
+| You know the value (e.g. from the card) | `omni-autofocus set-focus 222.5` |
+| You set Z to best focus yourself (test burns, a focus gauge) | `omni-autofocus set-focus --here` |
+| You want guided test burns | `omni-autofocus focus-ladder` |
+| You want the factory value back | `omni-autofocus set-focus --factory` |
+| You want to see what the laser has stored | `omni-autofocus calibration` |
+
+Values are **sensor readings at best focus**, not lens-to-work distances.
+
+**`focus-ladder`** runs autofocus, then steps Z from −4 to +4 mm, always moving up into each position
+so lead-screw slack does not skew the result. It pauses at each height so you can burn the same small
+test design in LightBurn. Use the lowest power that still marks: out-of-focus marks then fade, so the
+edges of the good range are easy to see. At the end it asks for the lowest and highest label that
+still looked good, and offers to save the middle of that range.
+
+For a deliberate defocus or a global nudge on top of the lens values, use
+`omni-autofocus config set focus.offset_mm 0.5`.
 
 ## Settings
 
@@ -70,8 +83,8 @@ The example values in the settings file match the tested Omni Xe 6W (focus heigh
 values from your ComMarker Studio install:
 
 ```bash
-omni-autofocus config init --from-commarker
 omni-autofocus config show
+omni-autofocus config set focus.offset_mm 0.3
 ```
 
 Settings live in `%APPDATA%\omni-autofocus\config.toml`. You can override the location with

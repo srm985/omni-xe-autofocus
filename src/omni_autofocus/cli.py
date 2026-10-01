@@ -375,18 +375,61 @@ def _dial_in(args, s: config.Settings, burned: list[float], reference: float) ->
     if abs(new_target - old_target) < 0.1:
         print(f"Lens {lens_key.upper()} focus height {old_target:.1f} mm is already centred.")
         return 0
-    path = Path(args.config) if args.config else config.default_config_path()
-    answer = _prompt(
-        f"Save lens {lens_key.upper()} focus height {old_target:.1f} -> {new_target:.1f} mm to {path}? [y/N] "
-    )
-    if answer.strip().lower() not in ("y", "yes"):
+    _save_focus_target(args, lens_key, old_target, new_target, yes=False)
+    return 0
+
+
+def _save_focus_target(args, lens_key: str, old: float, new: float, *, yes: bool) -> bool:
+    """Ask, then store ``new`` as the focus height (sensor reading) of lens ``lens_key``."""
+    path = config.settings_path(Path(args.config) if args.config else None)
+    question = f"Save lens {lens_key.upper()} focus height {old:.1f} -> {new:.1f} mm to {path}? [y/N] "
+    if not yes and _prompt(question).strip().lower() not in ("y", "yes"):
         print("Not saved.")
-        return 0
+        return False
     # Start from the file itself so one-off overrides (e.g. --lens) are not persisted.
     stored = config.load(path) if path.exists() else config.Settings()
-    stored = replace(stored, focus=replace(stored.focus, **{f"target_{lens_key}_mm": new_target}))
+    stored = replace(stored, focus=replace(stored.focus, **{f"target_{lens_key}_mm": new}))
     config.save(stored, path)
-    print(f"Saved. Autofocus now targets {new_target:.1f} mm for lens {lens_key.upper()}.")
+    print(f"Saved. Autofocus now targets {new:.1f} mm for lens {lens_key.upper()}.")
+    if stored.focus.offset_mm:
+        print(f"(focus.offset_mm = {stored.focus.offset_mm:+g} mm is still added on top.)")
+    return True
+
+
+def cmd_set_focus(args) -> int:
+    """Set the current lens's focus height: typed in, measured at the current Z, or the factory value."""
+    sources = [args.value is not None, args.here, args.factory]
+    if sum(sources) != 1:
+        print("Give exactly one of: a value in mm, --here, or --factory.")
+        return 2
+    s = _settings_with_lens(args)
+    lens_key = s.focus.lens.lower()
+    old = s.focus.target_b_mm if lens_key == "b" else s.focus.target_a_mm
+    if args.value is not None:
+        new = args.value
+    else:
+        _check_other_software(args.force)
+        dev, ctl = _open_controller()
+        with dev:
+            if args.here:
+                new = ctl.read_height_median(max(s.focus.samples, 5))
+                print(f"Measured sensor reading at the current Z: {new:.3f} mm")
+            else:
+                factory = config.from_commarker(_read_laser_calibration(ctl)).focus
+                new = factory.target_b_mm if lens_key == "b" else factory.target_a_mm
+                print(f"Factory value stored in the laser for lens {lens_key.upper()}: {new:.1f} mm")
+    new = round(new, 1)
+    if not s.focus.sensor_min_mm <= new <= s.focus.sensor_max_mm:
+        print(
+            f"{new:.1f} mm is outside the sensor's range "
+            f"{s.focus.sensor_min_mm:g}-{s.focus.sensor_max_mm:g} mm; remember the value is the "
+            "sensor reading at focus, not a lens-to-work distance."
+        )
+        return 2
+    if abs(new - old) < 0.05:
+        print(f"Lens {lens_key.upper()} focus height is already {old:.1f} mm.")
+        return 0
+    _save_focus_target(args, lens_key, old, new, yes=args.yes)
     return 0
 
 
@@ -430,7 +473,19 @@ def cmd_calibration(args) -> int:
 
 
 def cmd_config(args) -> int:
-    path = Path(args.config) if args.config else config.default_config_path()
+    path = config.settings_path(Path(args.config) if args.config else None)
+    if args.action == "set":
+        if len(args.values) != 2:
+            print("Usage: omni-autofocus config set SECTION.KEY VALUE (e.g. focus.offset_mm 0.3)")
+            return 2
+        stored = config.load(path) if path.exists() else config.Settings()
+        updated = config.set_value(stored, args.values[0], args.values[1])
+        config.save(updated, path)
+        print(f"Set {args.values[0]} = {args.values[1]} in {path}")
+        return 0
+    if args.values:
+        print(f"'config {args.action}' takes no extra arguments.")
+        return 2
     if args.action == "path":
         print(path)
     elif args.action == "show":
@@ -504,8 +559,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--save", action="store_true", help="write it to the settings file")
     sp.set_defaults(func=cmd_calibration)
 
+    sp = sub.add_parser(
+        "set-focus", help="set the focus height of the current lens (value, --here, or --factory)"
+    )
+    sp.add_argument("value", nargs="?", type=float, help="sensor reading at best focus, in mm")
+    sp.add_argument("--here", action="store_true", help="use the sensor reading at the current Z height")
+    sp.add_argument("--factory", action="store_true", help="restore the value stored in the laser")
+    sp.add_argument("-y", "--yes", action="store_true", help="do not ask before saving")
+    sp.set_defaults(func=cmd_set_focus)
+
     sp = sub.add_parser("config", help="manage the settings file")
-    sp.add_argument("action", choices=["show", "init", "path"])
+    sp.add_argument("action", choices=["show", "init", "path", "set"])
+    sp.add_argument("values", nargs="*", help="set: SECTION.KEY VALUE")
     sp.add_argument(
         "--from-laser", action="store_true", help="init: read the factory calibration from the laser"
     )

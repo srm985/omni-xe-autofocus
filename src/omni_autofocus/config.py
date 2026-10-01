@@ -107,6 +107,32 @@ def load(path: Path | None = None) -> Settings:
     )
 
 
+def set_value(settings: Settings, dotted_key: str, text: str) -> Settings:
+    """Return ``settings`` with ``section.key`` set from ``text``, converted to the field's type."""
+    section_name, _, key = dotted_key.partition(".")
+    sections = {"focus": settings.focus, "z_axis": settings.z_axis}
+    if section_name not in sections or not key:
+        raise ValueError(f"unknown setting {dotted_key!r}: use focus.<key> or z_axis.<key>")
+    section = sections[section_name]
+    if key not in {f.name for f in fields(section)}:
+        known = ", ".join(f.name for f in fields(section))
+        raise ValueError(f"unknown setting {dotted_key!r}; {section_name} has: {known}")
+    current = getattr(section, key)
+    if isinstance(current, bool):
+        if text.lower() not in ("true", "false", "yes", "no", "1", "0"):
+            raise ValueError(f"{dotted_key} needs true or false")
+        value: object = text.lower() in ("true", "yes", "1")
+    elif isinstance(current, int):
+        value = int(text)
+    elif isinstance(current, float):
+        value = float(text)
+    else:
+        value = text
+    if dotted_key == "focus.lens" and str(value).lower() not in ("auto", "a", "b"):
+        raise ValueError("focus.lens must be auto, a or b")
+    return replace(settings, **{section_name: replace(section, **{key: value})})
+
+
 def _toml_value(v) -> str:
     if isinstance(v, bool):
         return "true" if v else "false"

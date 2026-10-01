@@ -15,6 +15,8 @@ First public release. Verified on a ComMarker Omni Xe 6W (BSL controller, USB `0
 - coexists with LightBurn: restores its run state after a move, refuses to move while a job runs
 - factory calibration read from the laser's flash on first run (`calibration` command,
   `config init --from-laser`); no built-in focus values are used silently
+- `set-focus VALUE | --here | --factory` to set a lens's focus height by hand, by measurement
+  or back to the laser's value; `config set SECTION.KEY VALUE` for any setting
 - `height`, `move-z`, `status`, `devices` and `config` commands
 - settings import from an installed ComMarker Studio (`config init --from-commarker`)
 - `--simulate` mode and a protocol-level simulator for hardware-free development
