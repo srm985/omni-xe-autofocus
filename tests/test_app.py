@@ -708,3 +708,38 @@ def test_status_after_cancelled_reading_stays_on_the_main_view(settings_window):
     w._close_settings()
     settle(w)
     assert w.status.cget("text") == "Ready"  # neither "Measuring…" nor "Settings" leaks through
+
+
+def test_first_save_through_the_laser_finishes_cleanly_and_compares_numbers(settings_window, monkeypatch):
+    from omni_autofocus import session as session_mod
+
+    w = settings_window
+    monkeypatch.setattr(session_mod, "read_laser_calibration", lambda ctl: _laser_cfg(0.0, 221.0))
+    w._session.path.unlink()
+    w.open_settings_view()
+    w._set_entry(w.s_heights["A"], "0")  # typed, equal to the laser's placeholder 0.0
+    w._set_entry(w.s_heights["B"], "221")  # equal to the laser's 221.0
+    w._settings_save()
+    settle(w)
+    assert w.status.cget("text") == "Settings saved" and "Still working" not in w.detail.cget("text")
+    saved = config.load(w._session.path)
+    assert saved.focus.target_a_mm == 0.0 and saved.focus.target_b_mm == 221.0
+
+
+def test_settings_reading_errors_show_in_settings_only(settings_window, monkeypatch):
+    from omni_autofocus import session as session_mod
+    from omni_autofocus.controller import ControllerError
+
+    def broken(ctl):
+        raise ControllerError("no valid reply to command 0xAAE0")
+
+    monkeypatch.setattr(session_mod, "read_laser_calibration", broken)
+    w = settings_window
+    w.open_settings_view()
+    w._settings_factory("A")
+    settle(w)
+    assert w.settings_open and w.status.cget("text") == "Stopped" and "0xAAE0" in w.detail.cget("text")
+    w._settings_factory("A")
+    w._close_settings()  # Cancel while it runs: the error must not reach the main view
+    settle(w)
+    assert w.status.cget("text") == "Ready"

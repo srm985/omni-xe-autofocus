@@ -312,6 +312,7 @@ class App:
         self._quiet_until = 0.0
         self.tune: dict | None = None  # fine-tuning state while its view is open
         self.settings_open = False
+        self._pending_first_save: tuple | None = None
 
         self.root = tk.Tk()
         self.title = window_title(simulate)
@@ -518,7 +519,17 @@ class App:
         if moves:
             self.lens_picker.set_enabled(False)
         self._set_dot(BUSY)
+        if settings:
+            job, args = self._settings_job, (job, *args)
         threading.Thread(target=self._work, args=(job, *args), daemon=True).start()
+
+    def _settings_job(self, job, *args) -> None:
+        """Run a Settings reading; its errors go to the Settings view only (dropped after Cancel)."""
+        try:
+            job(*args)
+        except Exception as e:  # noqa: BLE001 - shown in the Settings view
+            log.debug("settings reading failed", exc_info=True)
+            self._post("settings_error", describe_error(e))
 
     def _work(self, job, *args) -> None:
         try:
@@ -574,8 +585,12 @@ class App:
             if self.settings_open:  # progress of a Settings reading; nothing to show after Cancel
                 self._set_status(event[1], BUSY)
         elif kind == "settings_first_base":
-            if self.settings_open:
-                self._settings_apply(event[1], event[2], None, first=True)
+            if self.settings_open:  # applied once the reading job is idle (see "idle")
+                self._pending_first_save = (event[1], event[2])
+        elif kind == "settings_error":
+            if self.settings_open:  # a failed Settings reading; nothing to show after Cancel
+                self._set_status("Stopped", ERR)
+                self._set_detail(event[1])
         elif kind == "settings_factory":
             if self.settings_open:
                 self._s_factory = event[1]
@@ -650,6 +665,9 @@ class App:
                 target = self.t_button
             if self.root.focus_get() in (None, self.button, self.t_button, self.t_save, self.s_save):
                 target.focus_set()
+            pending, self._pending_first_save = self._pending_first_save, None
+            if pending is not None and self.settings_open:
+                self._settings_apply(pending[0], pending[1], None, first=True)
             if self._lens_dirty:  # the lens was changed while busy: refresh the lens line now
                 self._lens_dirty = False
                 self._start(self._prepare_quietly)
@@ -1298,6 +1316,7 @@ class App:
         if not self.settings_open:
             return
         self.settings_open = False
+        self._pending_first_save = None
         self.settings_part.pack_forget()
         self.main_part.pack(fill="x")
         self._set_status("Ready", INFO)
@@ -1334,6 +1353,15 @@ class App:
         else:  # first settings file: build it on the laser's own calibration (Z axis, sensor range, sizes)
             self._start(self._read_first_base, texts, settings=True)
 
+    @staticmethod
+    def _same_setting(text: str, original: str) -> bool:
+        """'0' equals '0.0', 'Ctrl+Alt+F' equals 'ctrl+alt+f'."""
+        a, b = text.strip().lower(), original.strip().lower()
+        try:
+            return float(a) == float(b)
+        except ValueError:
+            return a == b
+
     def _settings_failed(self, e: Exception) -> None:
         msg = str(e)
         self._set_status("Not saved", ERR)
@@ -1367,7 +1395,7 @@ class App:
         s, changed = base, set()
         try:
             for key, text in texts.items():
-                if text.lower() == originals.get(key, "").strip().lower():
+                if self._same_setting(text, originals.get(key, "")):
                     continue  # unchanged: keep the stored value exactly
                 if key.startswith("focus.target") and not text:
                     raise ValueError(f"{names[key]}: enter a value, or press Factory")
@@ -1474,6 +1502,7 @@ class App:
 
     def _read_first_base(self, texts: dict) -> None:
         """First settings file: get the laser's calibration (or ComMarker Studio's) to build on."""
+        self._session.check_other_software()
         self._post("settings_note", "Reading the laser…")
         try:
             base, _source = self._session.factory_calibration()

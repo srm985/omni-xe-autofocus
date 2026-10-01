@@ -147,7 +147,8 @@ stored in your laser:
 
 Out-of-range values are refused with a message. Settings are read again on every Autofocus; after
 editing `app.hotkey` in the file (rather than in Settings), restart the app. From the command line:
-`omni-autofocus config show`, `omni-autofocus config set focus.offset_mm 0.3`.
+`omni-autofocus config show`, `omni-autofocus config set focus.offset_mm 0.3` (once the file exists:
+after the first Autofocus, or `omni-autofocus config init --from-laser`).
 
 ## Command line
 
