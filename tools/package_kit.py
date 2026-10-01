@@ -17,6 +17,7 @@ FILES = [
     "README.md",
     "docs/protocol.md",
     "docs/hardware-testing.md",
+    "docs/images/app.png",
     *sorted(str(p.relative_to(ROOT)).replace("\\", "/") for p in (ROOT / "docs" / "lightburn-kit").iterdir()),
     *sorted(
         str(p.relative_to(ROOT)).replace("\\", "/") for p in (ROOT / "src" / "omni_autofocus").glob("*.py")
