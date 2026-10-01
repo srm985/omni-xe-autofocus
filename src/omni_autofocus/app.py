@@ -96,12 +96,12 @@ def lens_summary(choice: str, why: str, target_mm: float | None) -> str:
     """One quiet line, e.g. "Auto → B · LightBurn 'BSLFiber' · 222.0 mm"."""
     letter = why.split(" (")[0].split()[-1].upper()
     head = f"Auto → {letter}" if choice == "Auto" else f"Lens {letter}"
-    if "LightBurn" in why:
+    if "from ComMarker" in why:  # checked first: this explanation also mentions LightBurn
+        source = "ComMarker Studio setting"
+    elif "LightBurn" in why:
         name = why.split("'")[1] if why.count("'") >= 2 else ""
         name = name if len(name) <= 24 else name[:23] + "…"
         source = f"LightBurn '{name}'" if name else "LightBurn"
-    elif "ComMarker" in why:
-        source = "ComMarker Studio"
     elif "simulation" in why:
         source = "simulation"
     else:

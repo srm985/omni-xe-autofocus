@@ -21,7 +21,7 @@ power switch for motion steps.
 | 8 | `omni-autofocus move-z 10` then `-10` | **yes** | sensor changes ≈ ±10 mm (checks 800 pulses/mm) |
 | 9 | `omni-autofocus focus` | **yes** | ends with `In focus` |
 | 10 | Burn a focus test in LightBurn without touching Z | — | best line at the autofocused height |
-| 11 | Create a second LightBurn BSL profile for lens A (70×70), select it, close LightBurn, run `omni-autofocus focus --dry-run` | no | prints "lens A … from last-used LightBurn profile" |
+| 11 | Create a second LightBurn BSL profile for lens A (70×70), select it, close LightBurn, check the app's lens line | no | shows how Auto decides (see log) |
 | 12 | With LightBurn connected: `status`, `height -n 3`, then use LightBurn | no | both work, LightBurn unaffected |
 | 13 | `omni-autofocus focus-ladder`: burns from −4 to +4 mm at near-threshold power | **yes** | good range is centred on 0 (else the tool saves the centre) |
 | 14 | `omni-autofocus calibration` | no | lists 181 / 222 mm, 70 / 150 mm fields, Z axis 1 at 800 pulses/mm |
@@ -62,3 +62,5 @@ Results log (fill in):
 | 2026-10-01 | 17 | pass | Ctrl+Alt+F with LightBurn focused: a downward move over 10 mm asked first (as designed); after Yes moved down 11.8 mm to 222.1 mm, "In focus" |
 | 2026-10-01 | 18 | pass | LightBurn framing preview running: Autofocus refused with "Stopped · The laser is busy …", Z did not move, no motion fault latched; after stopping the preview: moved up 2.4 mm to 222.0 mm, "In focus" |
 | 2026-10-01 | 20 | pass | in-app fine-tuning on hardware: Start autofocused and went to −4 mm, nine marks burned with Next / the hotkey, Z returned to focus, result view worked; owner: "looks good". Found and fixed on the way: the result used the noisy post-autofocus reading (0..0 showed 221.9), now based on the aimed 222.0 |
+| 2026-10-01 | 11 | pass, design changed | second BSL profile (70×70) selected, then LightBurn closed: prefs.ini rewritten on close but `DefaultDevice` stayed 0 (a JCZ profile). So LightBurn records its default device, not the one in use, and Auto cannot follow a profile switch. With two BSL profiles Auto now falls back to ComMarker Studio's lens setting (B here) and says so; the README tells users to pick A/B in the app when swapping lenses |
+| 2026-10-01 | 5/20 | pass | fine-tuning result accepted by the owner ("looks good") |

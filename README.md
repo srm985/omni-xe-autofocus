@@ -55,11 +55,15 @@ Good to know:
 ## Lenses
 
 The Omni takes two field lenses, each with its own focus height. The window shows which lens it uses
-and why. In **Auto** it follows LightBurn: the field size of your BSL device profile (the last-used
-one, or the only one) picks lens A (70×70 mm) or B (150×150 mm). With one LightBurn profile per lens,
-as LightBurn recommends for galvos, switching profiles switches the focus height. If LightBurn's
-choice is not picked up, or you have no profile per lens, choose **A** or **B** in the window (the
-choice is remembered). Without LightBurn, ComMarker Studio's lens setting is used.
+and why.
+
+* **When you swap lenses, choose A or B in the window.** The choice is remembered. A wrong choice is
+  caught by the question before any large move down.
+* **Auto** uses the field size of your LightBurn BSL device profile (70×70 mm → A, 150×150 mm → B),
+  but only when LightBurn says which one: when there is a single BSL profile, or when the BSL
+  profile is LightBurn's *default* device. LightBurn does not record which profile is in use, so
+  with one profile per lens Auto cannot follow a switch. It then uses ComMarker Studio's lens
+  setting, and the window says so.
 
 ## The ⋯ menu
 

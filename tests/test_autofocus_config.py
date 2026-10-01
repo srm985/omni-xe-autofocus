@@ -180,7 +180,7 @@ def test_lens_explicit_wins(tmp_path):
 
 
 def test_lens_from_users_lightburn_layout(tmp_path):
-    # The real layout seen on the first user's PC: last-used profile is a JCZ one, one BSL profile.
+    # The real layout seen on the first user's PC: the default device is a JCZ one, one BSL profile.
     prefs = write_prefs(
         tmp_path,
         [dev("JCZFiber", "JCZFiber", 150), dev("JCZFiber", "JCZFiber", 70), dev("BSLFiber", "BSLFiber", 150)],

@@ -55,12 +55,14 @@ def omni_device(prefs: dict) -> tuple[LightBurnDevice | None, str]:
     current = prefs.get("DefaultDevice")
     active = next((d for d in devs if d.index == current), None)
     if active is not None and active.is_bsl:
-        return active, f"last-used LightBurn profile '{active.name}'"
+        # DefaultDevice is the profile LightBurn starts with, not the one in use: LightBurn does not
+        # record a switch (hardware-tested 2026-10-01). Trust it only as the user's chosen default.
+        return active, f"LightBurn's default device '{active.name}'"
     if len(bsl) == 1:
         return bsl[0], f"the only BSL profile in LightBurn, '{bsl[0].name}'"
     if not bsl:
         return None, "no BSL device profile in LightBurn"
-    return None, "several BSL profiles in LightBurn and the last-used one is not BSL"
+    return None, "several BSL profiles in LightBurn, which does not record the one in use"
 
 
 def load_prefs(path: Path | None = None) -> dict | None:

@@ -207,7 +207,7 @@ def test_lens_summary():
     assert app.lens_summary("Auto", why, 222.0) == "Auto → B · LightBurn 'BSLFiber' · 222.0 mm"
     assert app.lens_summary("A", "lens A (set explicitly)", None) == "Lens A · focus read on first use"
     assert app.lens_summary("Auto", "lens A (from ComMarker Studio's lens setting; x)", 181.0) == (
-        "Auto → A · ComMarker Studio · 181.0 mm"
+        "Auto → A · ComMarker Studio setting · 181.0 mm"
     )
 
 
@@ -427,3 +427,11 @@ def test_fine_tune_result_ignores_sensor_noise(window):
     window._tune_secondary()  # Stop: back to focus
     settle(window)
     assert window.tune is None
+
+
+def test_lens_summary_for_the_commarker_fallback_does_not_claim_lightburn():
+    why = (
+        "lens B (from ComMarker Studio's lens setting; several BSL profiles in LightBurn, which does not "
+        "record the one in use)"
+    )
+    assert app.lens_summary("Auto", why, 222.0) == "Auto → B · ComMarker Studio setting · 222.0 mm"
