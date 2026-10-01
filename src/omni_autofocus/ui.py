@@ -399,7 +399,9 @@ class Check(tk.Frame):
         gap = round(7 * scale)
         self.label.pack(side="left", padx=(gap, round(2 * scale)))
         # Where the text starts, from the widget's left edge (for notes lined up beneath it).
-        self.text_x = 2 + 1 + size + gap + int(self.label.cget("bd"))
+        self.text_x = (
+            2 + 1 + size + gap + self.label.winfo_pixels(self.label.cget("bd"))
+        )  # Tcl_Obj on older Pythons
         self._pressed = False
         for w in (self, self.box, self.label):
             w.bind("<ButtonPress-1>", self._press)

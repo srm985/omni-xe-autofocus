@@ -261,7 +261,7 @@ def test_check_box_widget_toggles_and_lets_go_of_its_variable(window):
     box = ui.Check(top, text="Sound", variable=var, palette=ui.LIGHT, scale=1.75, font=("Segoe UI", 9))
     box.pack()
     top.update()
-    assert box.text_x == box.label.winfo_x() + int(box.label.cget("bd"))  # where the text really starts
+    assert box.text_x == box.label.winfo_x() + box.label.winfo_pixels(box.label.cget("bd"))
     assert box._toggle() == "break" and var.get() is True
     assert str(box.box.cget("image")) == str(box._images[True])
     var.set(False)  # the variable drives the picture too
@@ -333,8 +333,9 @@ class Scaled(tk.Tk):
             sys.exit(77)  # no display: the only reason to skip
         self.tk.call("tk", "scaling", scale * 96 / 72)
 tk.Tk = Scaled
-from omni_autofocus import app
 from pathlib import Path
+from omni_autofocus import app, config
+config.COMMARKER_DIR = Path(sys.argv[2]).parent / "no-commarker"  # as conftest.py does in-process
 import time
 w = app.App(config_path=Path(sys.argv[2]), simulate=True)
 deadline = time.monotonic() + 20
