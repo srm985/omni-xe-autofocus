@@ -59,3 +59,4 @@ Results log (fill in):
 | 2026-10-01 | 17 (early) | pass, unplanned | unplanned run: the laser was connected during an app test and the hotkey ran a real autofocus (net −1.8 mm, ended "In focus" at 222.0 mm). Since then app tests run in simulation only |
 | 2026-10-01 | 16 | pass | real install (per-user, dark theme, hotkey registered). First Autofocus showed the first-use dialog, Yes saved the laser's calibration; moved up 11.9 mm (3 mm probe, then the rest) to 222.0 mm: "In focus", lens line "Auto → B · LightBurn 'BSLFiber' · 222.0 mm" |
 | 2026-10-01 | 19 | pass | lens picker A / B / Auto updated the lens line; ⋯ → Check height showed the height without moving; reopened app kept its position and lens choice |
+| 2026-10-01 | 17 | pass | Ctrl+Alt+F with LightBurn focused: a downward move over 10 mm asked first (as designed); after Yes moved down 11.8 mm to 222.1 mm, "In focus" |
