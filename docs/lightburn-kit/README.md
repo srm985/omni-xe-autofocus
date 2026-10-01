@@ -72,4 +72,5 @@ parameters (also in the calibration).
 Sean, [github.com/srm985](https://github.com/srm985). Happy to answer questions, review an implementation against the hardware,
 and test beta builds on an Omni Xe 6W.
 
-This is independent work, not affiliated with ComMarker or BSL. It contains no vendor code. It exists so the laser can be used with other software (interoperability).
+This is independent work, not affiliated with ComMarker or BSL. It contains no vendor code and
+exists so the laser can be used with other software (interoperability).

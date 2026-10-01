@@ -224,8 +224,8 @@ on this work (including the protocol notes), please credit **Sean (github.com/sr
 this project.
 
 Independent, unofficial project, not affiliated with or endorsed by ComMarker, BSL or LightBurn
-Software. It contains no code or binaries from those vendors. It exists so the laser can be used with other software (interoperability). Product names belong
-to their owners.
+Software. It contains no code or binaries from those vendors and exists so the laser can be used
+with other software (interoperability). Product names belong to their owners.
 
 Moving the Z axis can drive the lens into the work. Stay at the machine. Provided as is, without
 warranty (see [LICENSE](LICENSE)).
