@@ -13,7 +13,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from . import __version__, autofocus, config, lens
+from . import __version__, autofocus, config, flash, lens
 from .controller import Controller, ControllerBusyError, ControllerError
 
 log = logging.getLogger("omni_autofocus")
@@ -62,9 +62,10 @@ _SIMULATE = False
 
 def _open_controller():
     if _SIMULATE:
-        from .simulator import FakeClock, SimulatedBoard
+        from .simulator import FakeClock, SimulatedBoard, factory_flash_image
 
-        board, clock = SimulatedBoard(sensor_mm=205.0), FakeClock()
+        board = SimulatedBoard(sensor_mm=205.0, flash_image=factory_flash_image())
+        clock = FakeClock()
         return contextlib.nullcontext(board), Controller(board, sleep=clock.sleep, clock=clock)
     from .cyusb import CyUsbDevice  # imported lazily: Windows-only
 
@@ -73,8 +74,39 @@ def _open_controller():
     return dev, Controller(dev)
 
 
-def _settings(args) -> config.Settings:
-    s = config.load(Path(args.config) if args.config else None)
+def _read_laser_calibration(ctl: Controller) -> dict:
+    """The ComMarker parameter file the factory stored in the controller's flash."""
+    return config.decode_commarker_cfg(flash.read_named(ctl, "lcsparam.cfg"))
+
+
+def _factory_calibration() -> tuple[config.Settings, str]:
+    """Calibration from the laser itself, else from an installed ComMarker Studio."""
+    try:
+        dev, ctl = _open_controller()
+        with dev:
+            return config.from_commarker(_read_laser_calibration(ctl)), "the laser"
+    except (ControllerError, OSError, ValueError, KeyError, IndexError) as e:
+        log.info("could not read the calibration from the laser: %s", e)
+    try:
+        return config.load_commarker(config.COMMARKER_DIR), "ComMarker Studio's settings"
+    except (OSError, ValueError, KeyError, IndexError) as e:
+        log.info("no ComMarker Studio settings: %s", e)
+    raise ControllerError(
+        "no focus calibration found: the laser's stored calibration could not be read and ComMarker "
+        "Studio is not installed. Run 'omni-autofocus config init', then enter the focus heights from "
+        "the card that came with the machine as focus.target_a_mm / focus.target_b_mm."
+    )
+
+
+def _settings(args, *, calibrate: bool = False) -> config.Settings:
+    """Settings from the file. With ``calibrate``, a missing file is first created from the factory
+    calibration (laser, then ComMarker Studio) so built-in example values are never used silently."""
+    path = config.settings_path(Path(args.config) if args.config else None)
+    if calibrate and not path.exists():
+        s, source = _factory_calibration()
+        config.save(s, path)
+        print(f"First run: saved the factory calibration from {source} to {path}")
+    s = config.load(path)
     if args.lens:
         s = replace(s, focus=replace(s.focus, lens=args.lens))
     return s
@@ -82,7 +114,7 @@ def _settings(args) -> config.Settings:
 
 def _settings_with_lens(args) -> config.Settings:
     """Settings with the lens resolved (explicit, LightBurn, then ComMarker); prints the choice."""
-    s = _settings(args)
+    s = _settings(args, calibrate=True)
     try:
         s, why = lens.resolve(s)
     except lens.LensError:
@@ -139,7 +171,7 @@ def cmd_height(args) -> int:
 
 def cmd_move_z(args) -> int:
     _check_other_software(args.force)
-    s = _settings(args)
+    s = _settings(args, calibrate=True)
     params = s.z_axis.axis_params()
     pulses = params.mm_to_pulses(args.mm)
     if abs(args.mm) > s.focus.max_move_mm:
@@ -365,6 +397,38 @@ def _prompt(text: str) -> str:
         return "q"
 
 
+def cmd_calibration(args) -> int:
+    """Show the factory calibration stored in the laser and compare it with the settings file."""
+    _check_other_software(args.force)
+    dev, ctl = _open_controller()
+    with dev:
+        raw = _read_laser_calibration(ctl)
+    laser = config.from_commarker(raw)
+    path = config.settings_path(Path(args.config) if args.config else None)
+    current = config.load(path) if path.exists() else None
+    rows = [
+        ("lens A focus (sensor mm)", "target_a_mm", laser.focus.target_a_mm),
+        ("lens B focus (sensor mm)", "target_b_mm", laser.focus.target_b_mm),
+        ("lens A field (mm)", "field_a_mm", laser.focus.field_a_mm),
+        ("lens B field (mm)", "field_b_mm", laser.focus.field_b_mm),
+        ("sensor range min (mm)", "sensor_min_mm", laser.focus.sensor_min_mm),
+        ("sensor range max (mm)", "sensor_max_mm", laser.focus.sensor_max_mm),
+    ]
+    print(f"{'stored in the laser':28s}{'laser':>10s}{'settings':>12s}")
+    for label, key, value in rows:
+        mine = getattr(current.focus, key) if current else None
+        flag = "" if mine is None or abs(mine - value) < 1e-6 else "   <- differs"
+        print(f"{label:28s}{value:10.1f}{'' if mine is None else f'{mine:12.1f}'}{flag}")
+    z = laser.z_axis
+    print(f"Z axis: axis {z.axis_id}, {z.axis_params().pulses_per_mm:g} pulses/mm, reversed={z.reverse}")
+    if args.save:
+        config.save(config.from_commarker(raw, base=current), path)
+        print(f"Saved to {path} (lens choice, offset and safety settings kept).")
+    elif current is None:
+        print(f"No settings file yet; '--save' writes these values to {path}.")
+    return 0
+
+
 def cmd_config(args) -> int:
     path = Path(args.config) if args.config else config.default_config_path()
     if args.action == "path":
@@ -373,11 +437,18 @@ def cmd_config(args) -> int:
         print(f"# effective settings (file: {path}{'' if path.exists() else ', not present'})")
         print(config.dumps(_settings(args)))
     elif args.action == "init":
-        if args.from_commarker:
+        if args.from_laser:
+            _check_other_software(args.force)
+            dev, ctl = _open_controller()
+            with dev:
+                s = config.from_commarker(_read_laser_calibration(ctl))
+            print("Read the factory calibration from the laser")
+        elif args.from_commarker:
             s = config.load_commarker(Path(args.commarker_dir))
             print(f"Imported values from {args.commarker_dir}")
         else:
             s = config.Settings()
+            print("Wrote example values: set focus.target_a_mm / target_b_mm from your machine's card")
         if path.exists() and not args.overwrite:
             print(f"{path} already exists (use --overwrite).")
             return 1
@@ -429,8 +500,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-y", "--yes", action="store_true", help="do not ask before starting")
     sp.set_defaults(func=cmd_focus_ladder)
 
+    sp = sub.add_parser("calibration", help="show the factory calibration stored in the laser (read-only)")
+    sp.add_argument("--save", action="store_true", help="write it to the settings file")
+    sp.set_defaults(func=cmd_calibration)
+
     sp = sub.add_parser("config", help="manage the settings file")
     sp.add_argument("action", choices=["show", "init", "path"])
+    sp.add_argument(
+        "--from-laser", action="store_true", help="init: read the factory calibration from the laser"
+    )
     sp.add_argument("--from-commarker", action="store_true", help="init: import values from ComMarker Studio")
     sp.add_argument("--commarker-dir", default=str(config.COMMARKER_DIR))
     sp.add_argument("--overwrite", action="store_true")

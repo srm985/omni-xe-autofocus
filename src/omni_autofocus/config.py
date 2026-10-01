@@ -83,11 +83,17 @@ def _apply(section_cls, data: dict, where: str):
     return section_cls(**data)
 
 
+def settings_path(path: Path | None = None) -> Path:
+    """The settings file in use: ``path``, else $OMNI_AUTOFOCUS_CONFIG, else the default location."""
+    if path is not None:
+        return path
+    env = os.environ.get("OMNI_AUTOFOCUS_CONFIG")
+    return Path(env) if env else default_config_path()
+
+
 def load(path: Path | None = None) -> Settings:
     """Load settings from ``path``, $OMNI_AUTOFOCUS_CONFIG or the default location; fall back to defaults."""
-    if path is None:
-        env = os.environ.get("OMNI_AUTOFOCUS_CONFIG")
-        path = Path(env) if env else default_config_path()
+    path = settings_path(path)
     if not path.exists():
         return Settings()  # a not-yet-created settings file means defaults
     with open(path, "rb") as f:

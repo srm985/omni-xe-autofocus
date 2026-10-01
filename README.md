@@ -27,6 +27,7 @@ omni-autofocus focus-ladder         # dial in focus: test burns from -4..+4 mm, 
 omni-autofocus height -n 5          # read the sensor (no motion)
 omni-autofocus move-z 2.5           # relative Z move in mm (positive = larger sensor reading)
 omni-autofocus status               # controller state and Z position counter
+omni-autofocus calibration          # show the factory calibration stored in the laser
 omni-autofocus --simulate focus     # try everything against a built-in simulator
 ```
 
@@ -55,9 +56,17 @@ power that still marks: out-of-focus marks then fade, so the edges of the good r
 Finally it asks for the lowest and highest label that still looked good, and offers to save the
 middle of that range as the lens's new focus height.
 
+## Calibration from the laser
+
+Each Omni's focus heights are measured at the factory and stored **in the laser's controller**,
+along with its lens and Z-axis parameters. On first use the tool reads them from the laser and saves
+them to its settings file, so there is nothing to type in. `omni-autofocus calibration` shows what
+the laser has stored and how it compares with your settings; `--save` adopts the laser's values. If
+the laser's store can't be read, the tool falls back to an installed ComMarker Studio's settings.
+
 ## Settings
 
-Defaults match the tested Omni Xe 6W (focus heights above, Z on axis 1 at 800 pulses/mm). If your machine differs, copy the
+The example values in the settings file match the tested Omni Xe 6W (focus heights above, Z on axis 1 at 800 pulses/mm). If your machine differs, copy the
 values from your ComMarker Studio install:
 
 ```bash

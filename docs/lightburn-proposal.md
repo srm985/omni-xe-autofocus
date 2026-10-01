@@ -43,8 +43,10 @@ finish, reset (as in ComMarker's `MarkControl::doMoveAxisPulse`).
 | Focus targets | 222 mm (lens B, 150×150), 181 mm (lens A, 70×70) | `fBestFocalDistance(_B)` |
 | Valid sensor range | 120–280 mm | `fMin/MaxDistanceOfSensor` |
 
-Other Omni variants may differ. The values can be read from a ComMarker Studio install (the reference
-tool's `config init --from-commarker` decodes the file).
+Other machines have their own values, measured at the factory and **stored in the controller's
+flash** together with ComMarker's parameter file. LightBurn can read them with four read-only
+commands (`AAE0`/`AAE1`/`AAE4`/`AAE5`, see protocol.md section 5), so no user input is needed. The
+reference tool does exactly this.
 
 ## Suggested LightBurn integration
 

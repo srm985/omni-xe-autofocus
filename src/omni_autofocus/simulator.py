@@ -24,7 +24,12 @@ class SimulatedBoard:
         z_pulses_per_mm: float = 800.0,
         z_reverse: bool = True,
         moving_polls: int = 3,
+        flash_image: bytes = b"",
+        flash_start: int = 0x00300000,
     ):
+        self.flash_image = flash_image
+        self.flash_start = flash_start
+        self._flash_buffer = b""
         self.sensor_mm = sensor_mm
         self.z_axis_id = z_axis_id
         self.z_pulses_per_mm = z_pulses_per_mm
@@ -83,6 +88,8 @@ class SimulatedBoard:
             nibble_shift = 4 if self.z_axis_id % 2 else 0
             reply[0x28 + self.z_axis_id // 2] = moving << nibble_shift
             return bytes(reply)
+        if code in (0xAAE0, 0xAAE1, 0xAAE4, 0xAAE5):
+            return self._flash_command(code, payload)
         if code == commands.CMD_SET_RUN_STATE:
             state = struct.unpack(">H", payload[2:4])[0]
             if state == commands.RUN_STATE_RUN:
@@ -104,6 +111,22 @@ class SimulatedBoard:
                 rx, self._rx = self._rx, b""
             return payload[:2] + bytes([len(rx), 0]) + rx
         return payload[:2] + bytes(10)
+
+    def _flash_command(self, code: int, payload: bytes) -> bytes:
+        head = payload[:2]
+        if code == 0xAAE0:  # user-area range
+            end = self.flash_start + max(len(self.flash_image), 0x10000)
+            return head + bytes(2) + struct.pack(">II", self.flash_start, end) + bytes(4)
+        if code == 0xAAE1:  # state: idle, read buffer ready
+            return head + bytes(2) + bytes([0b010]) + bytes(7)
+        if code == 0xAAE4:  # load: BE length @4, BE address @8
+            length, addr = struct.unpack_from(">II", payload, 4)
+            offset = addr - self.flash_start
+            chunk = self.flash_image[offset : offset + length]
+            self._flash_buffer = chunk + bytes(length - len(chunk))
+            return head + bytes(10)
+        data = self._flash_buffer  # AAE5 fetch
+        return head + bytes(2) + struct.pack(">H", len(data)) + data
 
     def _sensor_reply(self, request: bytes) -> bytes:
         if request != commands.HEIGHT_REQUEST:
@@ -154,3 +177,39 @@ class FakeClock:
 
     def __call__(self) -> float:
         return self.now
+
+
+def factory_flash_image() -> bytes:
+    """A flash store like a factory-calibrated Omni Xe: lcsparam.cfg with focus heights and Z axis."""
+    from . import config, flash
+
+    cfg = {
+        "lmcPars": {
+            "params": [
+                {
+                    "parName": "default",
+                    "IsGALVO_B": True,
+                    "fBestFocalDistance": 181.0,
+                    "fBestFocalDistance_B": 222.0,
+                    "fMinDistanceOfSensor": 120.0,
+                    "fMaxDistanceOfSensor": 280.0,
+                    "galvoParam": {"workSize": {"x": 70.0, "y": 70.0}},
+                    "galvo2Param": {"workSize": {"x": 150.0, "y": 150.0}},
+                }
+            ]
+        },
+        "extMarkerPar": {
+            "axisZParExt": {
+                "setting": {
+                    "axisId": 1,
+                    "bRevRot": True,
+                    "pitchPulse": 3200,
+                    "screwPitch": 4.0,
+                    "maxRunSpeed": 320.0,
+                    "gearRatio": 1.0,
+                },
+                "runData": {"startSpeed": 0.0, "runSpeed": 8.0, "accSpeed": 5.0},
+            }
+        },
+    }
+    return flash.build_store({"./config/lcsparam.cfg": config.encode_commarker_cfg(cfg)})

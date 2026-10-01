@@ -131,3 +131,33 @@ holds the pad size) and sent on the data port. Optional LZMA compression (type 2
 
 ComMarker's autofocus thread then sleeps 2 s. This tool additionally waits at least the estimated
 travel time and for the `AA07` moving bit to clear before the final reset.
+
+## 5. Factory calibration in the controller's flash
+
+The controller's flash holds a small file store with ComMarker Studio's parameter files
+(`lcsparam.cfg`, `lcsparam_red.cfg`, `uiparam.cfg`, lens correction files). ComMarker's
+`LoadParamFromFlash` downloads them when it first meets a machine, so the per-machine focus
+heights (`fBestFocalDistance`, `fBestFocalDistance_B`) come from the laser, not from user input.
+
+Commands (all 12-byte form, read-only):
+
+| command | purpose | reply |
+|---|---|---|
+| `AAE0` | flash user area | `reply[4..7]` start, `reply[8..11]` end address (BE) |
+| `AAE1` | flash state | `reply[4]` bit0 busy, bit1 read buffer ready, bit2 busy |
+| `AAE4` | load into buffer | request: `AA E4 01 00`, BE length (≤ 480, even), BE address |
+| `AAE5` | fetch buffer | `reply[4..5]` length (BE), data from `reply[6]` |
+
+Read loop (`Executor7::readFlashData`): wait until idle (bit0 and bit2 clear), then for each
+chunk of up to 480 bytes, `AAE4`, wait for bit1 set and bit0 clear, then `AAE5`.
+
+Store layout (little-endian), at offsets within the user area: 4 KiB index at 0 (backup at
+0x1000). The index CRC16 (`u16 @0`) covers bytes 2..4095 and equals the Modbus CRC16 with its
+bytes swapped. The header is `u16 0x1000 @2, u32 1 @4, u32 0x1000 @8` (sector size). There are 50
+entries of 0x50 bytes from 0x60: `u16 crc16 @0` (of bytes 2..0x4F), `u16 sector @2`,
+`u32 stored size @4`, `u64 CRC-64/ECMA-182 of the stored bytes @0x10`, `u8 flags @0x18`
+(bit0 = compressed) and a NUL-terminated name `@0x1C` such as `./config/lcsparam.cfg`. Data
+starts at `sector × 0x1000`. Compressed files use the classic `.lzma` layout: 5 property bytes,
+an 8-byte LE uncompressed size, then the raw LZMA stream. The decompressed file is the usual
+obfuscated `.cfg` (section 2).
+

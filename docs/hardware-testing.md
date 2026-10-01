@@ -22,6 +22,7 @@ laser** (both poll the controller continuously). Keep a hand near the power swit
 
 | 12 | With LightBurn connected: `status`, `height -n 3`, then use LightBurn | no | both work, LightBurn unaffected |
 | 13 | `omni-autofocus focus-ladder`: burns from −4 to +4 mm at near-threshold power | **yes** | good range is centred on 0 (else the tool saves the centre) |
+| 14 | `omni-autofocus calibration` | no | lists 181 / 222 mm, 70 / 150 mm fields, Z axis 1 at 800 pulses/mm |
 | 11 | Create a second LightBurn BSL profile for lens A (70×70), select it, close LightBurn, run `omni-autofocus focus --dry-run` | no | prints "lens A … from last-used LightBurn profile" |
 
 If step 6 moves the wrong way (sensor change ≈ −1 mm): set `invert_direction = true` in `[z_axis]`
