@@ -31,3 +31,4 @@ Results log (fill in):
 | 2026-10-01 | 1 | pass | device opened at `vid_04b4&pid_1004` |
 | 2026-10-01 | 2 | pass | framing, checksum and echo confirmed. Replies carry seq byte `80` and status byte `01` (bit 0 set, error bits 1–3 clear). AA05: payload 32 bytes, board state 0, free cache 32767 KiB. AA07: payload 44 bytes, `reply[0x28] = cc` → axes 0/1 nibble `0xc` (moving bit clear; meaning of bits 2–3 unknown, possibly limit/home inputs) |
 | 2026-10-01 | 3 | partial | AAC1 pass-through and Modbus confirmed: request answered, collect returned `01 04 04 7f ff ff ff d3 d0` (valid CRC) = sensor "no target" value. Need a surface within range to get a real distance |
+| 2026-10-01 | 3 | pass | with a surface under the head: 237.500 mm, identical over 10 readings (no jitter at all; sensor resolution may be coarse, check in step 4) |
