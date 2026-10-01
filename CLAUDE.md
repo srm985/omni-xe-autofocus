@@ -26,3 +26,5 @@ LightBurn. The controller protocol is documented in `docs/protocol.md`.
 - Golden byte vectors in `tests/` are the reference encodings. If hardware disagrees, update
   `docs/protocol.md` and the vectors together, citing the observed frames.
 - Keep runtime dependency-free (stdlib + ctypes).
+- Docs, comments and commit messages describe what the protocol is, nothing about its origin.
+  Local-only notes and tools are in `CLAUDE.local.md` (not in git).
