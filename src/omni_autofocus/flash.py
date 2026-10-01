@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import lzma
 import struct
+import zlib
 from dataclasses import dataclass
 
 from . import commands, modbus
@@ -103,7 +104,13 @@ def flash_state(ctl: Controller) -> tuple[bool, bool, bool]:
 
 
 def _wait(ctl: Controller, done, what: str, timeout_s: float = 5.0) -> None:
-    ctl._poll(lambda: done(flash_state(ctl)), what, timeout_s, 0.001)
+    # Like the vendor, sleep before every state query: checking immediately after a command can
+    # see the previous transfer's "buffer ready" bit and fetch an empty buffer.
+    def check() -> bool:
+        ctl._sleep(0.001)
+        return done(flash_state(ctl))
+
+    ctl._poll(check, what, timeout_s, 0.0)
 
 
 def read(ctl: Controller, info: FlashInfo, offset: int, length: int) -> bytes:
@@ -119,11 +126,14 @@ def read(ctl: Controller, info: FlashInfo, offset: int, length: int) -> bytes:
             n = length - len(out)
             n += n & 1
         load = struct.pack(">HBB", CMD_FLASH_LOAD, 1, 0) + struct.pack(">II", n, addr + len(out))
-        _check(ctl.command(load), "flash load")
-        _wait(ctl, lambda s: not s[0] and s[1], "flash read buffer")
-        r = _check(ctl.command(commands.status_cmd(CMD_FLASH_FETCH)), "flash fetch")
-        (got,) = struct.unpack_from(">H", r, 4)
-        if got != n or len(r) < 6 + got:
+        for _attempt in range(3):
+            _check(ctl.command(load), "flash load")
+            _wait(ctl, lambda s: not s[0] and s[1], "flash read buffer")
+            r = _check(ctl.command(commands.status_cmd(CMD_FLASH_FETCH)), "flash fetch")
+            (got,) = struct.unpack_from(">H", r, 4)
+            if got == n and len(r) >= 6 + got:
+                break
+        else:
             raise FlashError(f"flash fetch returned {got} bytes, expected {n}")
         out += r[6 : 6 + min(got, length - len(out))]
     return bytes(out)
@@ -220,8 +230,37 @@ def build_store(files: dict[str, bytes], *, compressed: bool = True) -> bytes:
 
 
 def read_named(ctl: Controller, name: str) -> bytes:
+    """A stored file's bytes (after the store's own optional LZMA layer)."""
     info = flash_info(ctl)
     for entry in read_index(ctl, info):
         if entry.name == name or entry.name.endswith("/" + name.lstrip("./")):
             return read_file(ctl, info, entry)
     raise FlashError(f"{name} is not stored on the controller")
+
+
+def qt_uncompress(data: bytes) -> bytes:
+    """Qt ``qUncompress``: 4-byte big-endian length, then a zlib stream."""
+    if len(data) < 6:
+        raise FlashError("compressed file too short")
+    (size,) = struct.unpack_from(">I", data, 0)
+    try:
+        out = zlib.decompress(data[4:])
+    except zlib.error as e:
+        raise FlashError(f"could not uncompress file: {e}") from e
+    if len(out) != size:
+        raise FlashError(f"uncompressed size {len(out)} differs from the declared {size}")
+    return out
+
+
+def qt_compress(data: bytes) -> bytes:
+    """Qt ``qCompress`` (for simulated stores)."""
+    return struct.pack(">I", len(data)) + zlib.compress(data)
+
+
+def read_commarker_file(ctl: Controller, name: str) -> bytes:
+    """A ComMarker parameter file as ComMarker's ``LoadParamFromFlash`` sees it. The application
+    stores files ``qCompress``-ed (hardware: Omni Xe 6W, 2026-10-01); plain files are passed through."""
+    data = read_named(ctl, name)
+    if len(data) > 5 and data[4] == 0x78:  # zlib header after the 4-byte length
+        return qt_uncompress(data)
+    return data

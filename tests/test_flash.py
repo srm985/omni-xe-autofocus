@@ -132,3 +132,20 @@ def test_cli_without_any_calibration_source_refuses(monkeypatch, capsys, tmp_pat
     code = cli.main(["--force", "--config", str(tmp_path / "none.toml"), "--lens", "b", "focus", "--dry-run"])
     assert code == 1
     assert "no focus calibration found" in capsys.readouterr().err
+
+
+def test_qt_compress_roundtrip_and_hardware_header_shape():
+    data = b"\x01" + bytes(7) + b"obfuscated json" * 500
+    packed = flash.qt_compress(data)
+    # Same shape as the controller's files (2026-10-01): BE length, then a zlib header 78 xx.
+    assert packed[:4] == len(data).to_bytes(4, "big") and packed[4] == 0x78
+    assert flash.qt_uncompress(packed) == data
+    with pytest.raises(flash.FlashError, match="declared"):
+        flash.qt_uncompress((len(data) + 1).to_bytes(4, "big") + packed[4:])
+
+
+def test_read_commarker_file_handles_qcompressed_and_plain():
+    raw = b"\x01" + bytes(7) + b"{}"
+    board, ctl = make({"./config/q.cfg": flash.qt_compress(raw), "./config/p.cfg": raw}, compressed=False)
+    assert flash.read_commarker_file(ctl, "q.cfg") == raw
+    assert flash.read_commarker_file(ctl, "p.cfg") == raw

@@ -212,4 +212,6 @@ def factory_flash_image() -> bytes:
             }
         },
     }
-    return flash.build_store({"./config/lcsparam.cfg": config.encode_commarker_cfg(cfg)})
+    # Like the real controller: qCompress-ed by the application, not LZMA-flagged in the store.
+    stored = flash.qt_compress(config.encode_commarker_cfg(cfg))
+    return flash.build_store({"./config/lcsparam.cfg": stored}, compressed=False)

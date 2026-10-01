@@ -76,7 +76,7 @@ def _open_controller():
 
 def _read_laser_calibration(ctl: Controller) -> dict:
     """The ComMarker parameter file the factory stored in the controller's flash."""
-    return config.decode_commarker_cfg(flash.read_named(ctl, "lcsparam.cfg"))
+    return config.decode_commarker_cfg(flash.read_commarker_file(ctl, "lcsparam.cfg"))
 
 
 def _factory_calibration() -> tuple[config.Settings, str]:

@@ -158,6 +158,17 @@ entries of 0x50 bytes from 0x60: `u16 crc16 @0` (of bytes 2..0x4F), `u16 sector 
 `u32 stored size @4`, `u64 CRC-64/ECMA-182 of the stored bytes @0x10`, `u8 flags @0x18`
 (bit0 = compressed) and a NUL-terminated name `@0x1C` such as `./config/lcsparam.cfg`. Data
 starts at `sector × 0x1000`. Compressed files use the classic `.lzma` layout: 5 property bytes,
-an 8-byte LE uncompressed size, then the raw LZMA stream. The decompressed file is the usual
-obfuscated `.cfg` (section 2).
+an 8-byte LE uncompressed size, then the raw LZMA stream.
+
+On top of that, ComMarker Studio stores its files `qCompress`-ed (4-byte BE length, then a zlib
+stream) and un-compresses them in `LoadParamFromFlash`. The result is the usual obfuscated `.cfg`
+(section 2).
+
+Hardware (Omni Xe 6W, 2026-10-01): user area `0x0..0x7FFFFF`. The store holds `lcsparam.cfg`,
+`lcsparam_red.cfg`, `uiparam.cfg` and `threedparam.cfg` at sectors 2/66/130/194, store flags 0
+(no LZMA) and all `qCompress`-ed, with CRC64s matching. The factory `lcsparam.cfg` holds focus
+181/222 mm and fields 70/150 mm, and selects lens A (`IsGALVO_B` false).
+
+Timing: sleep about 1 ms before each `AAE1` poll, as the vendor does. Polling immediately after
+`AAE4` can see the previous transfer's "buffer ready" bit, and `AAE5` then returns 0 bytes.
 
