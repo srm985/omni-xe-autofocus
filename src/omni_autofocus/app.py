@@ -63,8 +63,8 @@ def describe_error(e: BaseException) -> str:
         return "The laser is busy. Stop the LightBurn job or close the framing preview, then try again."
     if isinstance(e, SensorNoTargetError):
         return (
-            "The sensor sees no surface in range. Move the head to roughly working height with the "
-            "machine's Z buttons, then try again."
+            "No surface in the sensor's range. Bring the head near working height with the machine's Z "
+            "buttons."
         )
     if isinstance(e, session.ConflictError):
         msg = str(e)
@@ -107,12 +107,12 @@ def describe_result(r: autofocus.FocusResult) -> tuple[str, str, str]:
 def lens_summary(
     choice: str, why: str, target_mm: float | None, focus: config.FocusSettings | None = None
 ) -> str:
-    """One quiet line, e.g. "Auto → 150 mm (B) · LightBurn 'BSLFiber' · 222.0 mm"."""
+    """A quiet line, e.g. "Auto → 150 mm (B) · LightBurn 'BSLFiber' · 222.0 mm" (a long device name wraps)."""
     letter = why.split(" (")[0].split()[-1].upper()
     name = lens_name(letter, focus or config.FocusSettings())
     head = f"Auto → {name}" if choice == "Auto" else f"{name} lens"
     if "from ComMarker" in why:  # checked first: this explanation also mentions LightBurn
-        source = "ComMarker Studio setting"
+        source = "ComMarker Studio"
     elif "LightBurn" in why:
         name = why.split("'")[1] if why.count("'") >= 2 else ""
         name = name if len(name) <= 24 else name[:23] + "…"
@@ -121,7 +121,7 @@ def lens_summary(
         source = "simulation"
     else:
         source = ""
-    focus = f"{target_mm:.1f} mm" if target_mm is not None else "focus read on first use"
+    focus = f"{target_mm:.1f} mm" if target_mm is not None else "focus not read"
     return " · ".join(part for part in (head, source, focus) if part)
 
 
@@ -324,15 +324,16 @@ class App:
         dark = ui.windows_prefers_dark()
         p = self.palette = ui.DARK if dark else ui.LIGHT
         sc = ui.scale_of(self.root)
-        wrap = int(self.WIDTH * sc)
+        wrap = int(self.WIDTH * sc) - 6  # for text: a Label adds 2 + 1 px of border and padding a side
         font = ui.FONT
         self.root.configure(bg=p.bg)
 
         body = tk.Frame(self.root, bg=p.bg, padx=int(20 * sc), pady=int(16 * sc))
         body.pack(fill="both", expand=True)
 
-        # Status: a coloured dot, a one-line headline, two quiet lines of detail (fixed heights, so
-        # the button never moves under the pointer).
+        # Status: a coloured dot, a one-line headline and quiet lines of detail. The detail keeps room
+        # for two lines, so the button does not move for the usual messages; a longer one grows it
+        # rather than being cut off.
         head = tk.Frame(body, bg=p.bg)
         head.pack(fill="x")
         d = int(10 * sc)
@@ -340,19 +341,24 @@ class App:
         self._dot = self.dot.create_oval(1, 1, d - 1, d - 1, fill=p.info, outline="")
         self.dot.pack(side="left", padx=(0, int(8 * sc)))
         self.status = tk.Label(
-            head, text="Starting…", bg=p.bg, fg=p.text, font=(font, 12, "bold"), anchor="w"
-        )
+            head, text="Starting…", bg=p.bg, fg=p.text, font=(font, 12, "bold"), anchor="w", width=1
+        )  # width=1: a long headline is cut short instead of widening the window
         self.status.pack(side="left", fill="x", expand=True)
         self.more = tk.Label(head, text="⋯", bg=p.bg, fg=p.muted, font=(font, 14), cursor="hand2")
         self.more.configure(padx=int(8 * sc), pady=int(2 * sc), takefocus=1, highlightthickness=2)
         self.more.configure(highlightcolor=p.text, highlightbackground=p.bg)
         ui.focus_ring(self.more, p.text, lambda: p.bg)
         self.more.pack(side="right")
+        detail_box = tk.Frame(body, bg=p.bg)
+        detail_box.pack(fill="x", pady=(int(4 * sc), 0))
         self.detail = tk.Label(
-            body, text=" ", bg=p.bg, fg=p.muted, font=(font, 9), anchor="nw", justify="left",
+            detail_box, text=" ", bg=p.bg, fg=p.muted, font=(font, 9), anchor="nw", justify="left",
             wraplength=wrap, height=2,
         )  # fmt: skip
-        self.detail.pack(fill="x", pady=(int(4 * sc), 0))
+        self.detail.grid(row=0, column=0, sticky="nwe")
+        detail_box.columnconfigure(0, weight=1)
+        detail_box.rowconfigure(0, minsize=self.detail.winfo_reqheight())
+        self.detail.configure(height=0)
 
         self.main_part = main = tk.Frame(body, bg=p.bg)  # Autofocus view
         main.pack(fill="x")
@@ -363,7 +369,7 @@ class App:
             guard=self._key_allowed,
         )  # fmt: skip
         self.button.pack(pady=(int(12 * sc), int(6 * sc)))
-        self.hint = tk.Label(main, text=" ", bg=p.bg, fg=p.muted, font=(font, 9))
+        self.hint = tk.Label(main, text=" ", bg=p.bg, fg=p.muted, font=(font, 9), wraplength=wrap)
         self.hint.pack()
 
         tk.Frame(main, bg=p.border, height=1).pack(fill="x", pady=(int(14 * sc), int(12 * sc)))
@@ -380,13 +386,16 @@ class App:
             scale=sc,
         )
         self.lens_picker.pack(side="right")
-        self.lens_info = tk.Label(main, text=" ", bg=p.bg, fg=p.muted, font=(font, 8), anchor="w")
+        self.lens_info = tk.Label(
+            main, text=" ", bg=p.bg, fg=p.muted, font=(font, 8), anchor="w", justify="left", wraplength=wrap
+        )
         self.lens_info.pack(fill="x", pady=(int(8 * sc), 0))
         self._build_tune(self.tune_part, p, sc, wrap, font)
         self._build_settings(self.settings_part, p, sc, wrap, font)
-        # Same width in both views, so the window does not jump when fine-tuning opens or closes.
+        # Same width in every view, so the window does not jump when fine-tuning or Settings opens.
         self.root.update_idletasks()
-        inner = max(part.winfo_reqwidth() for part in (self.main_part, self.tune_part, self.settings_part))
+        parts = (self.main_part, self.tune_part, self.t_result, self.settings_part)  # t_result: unpacked
+        inner = max(part.winfo_reqwidth() for part in parts)
         self.root.minsize(inner + 2 * int(20 * sc), 0)
 
         self.on_top = tk.BooleanVar(value=self.state.get("on_top", True) is not False)
@@ -498,7 +507,7 @@ class App:
             self.hint.configure(text=f"or press {keys} anywhere")
         else:
             self.hotkey = None
-            self.hint.configure(text=f"{keys} is taken by another program (⋯ → Settings)")
+            self.hint.configure(text=f"{keys} is taken · ⋯ → Settings")
 
     # -- worker plumbing ------------------------------------------------------------------------------
 
@@ -850,22 +859,22 @@ class App:
             guard=self._key_allowed,
         )  # fmt: skip
         self.t_button.pack(pady=(int(12 * sc), int(6 * sc)))
-        self.t_hint = tk.Label(steps, text=" ", bg=p.bg, fg=p.muted, font=(font, 9))
+        self.t_hint = tk.Label(steps, text=" ", bg=p.bg, fg=p.muted, font=(font, 9), wraplength=wrap)
         self.t_hint.pack()
 
         self.t_result = tk.Frame(parent, bg=p.bg)  # shown on the result step
         labels = [fmt_offset(o) for o in TUNE_OFFSETS]
         self.t_low = ui.Segmented(
             self.t_result, options=labels, value=labels[0], command=lambda _: self._tune_outcome(),
-            palette=p, scale=sc, pad=5,
+            palette=p, scale=sc, pad=2, stretch=True,
         )  # fmt: skip
         self.t_high = ui.Segmented(
             self.t_result, options=labels, value=labels[-1], command=lambda _: self._tune_outcome(),
-            palette=p, scale=sc, pad=5,
+            palette=p, scale=sc, pad=2, stretch=True,
         )  # fmt: skip
         for text, picker in (("Lowest mark that still looks good", self.t_low), ("Highest", self.t_high)):
             tk.Label(self.t_result, text=text, bg=p.bg, fg=p.text, font=(font, 9), anchor="w").pack(fill="x")
-            picker.pack(anchor="w", pady=(int(2 * sc), int(8 * sc)))
+            picker.pack(fill="x", pady=(int(2 * sc), int(8 * sc)))
         self.t_outcome = tk.Label(
             self.t_result, text=" ", bg=p.bg, fg=p.text, font=(font, 9, "bold"), anchor="w", justify="left",
             wraplength=wrap,
@@ -1183,31 +1192,38 @@ class App:
             lbl.pack(side="left")
             return lbl
 
-        def entry(r, width: int, justify: str = "right") -> tk.Entry:
+        def entry(r, width: int, justify: str = "right", side: str = "left") -> tk.Entry:
             e = tk.Entry(
                 r, width=width, bg=p.bg, fg=p.text, insertbackground=p.text, relief="flat", font=(font, 9),
-                justify=justify, highlightthickness=1, highlightbackground=p.border, highlightcolor=p.accent,
+                justify=justify, highlightthickness=max(1, round(sc)), highlightbackground=p.border,
+                highlightcolor=p.accent, bd=round(3 * sc),  # a flat border: room between text and outline
             )  # fmt: skip
-            e.pack(side="left", padx=(int(4 * sc), int(2 * sc)), ipady=int(2 * sc))
+            e.pack(side=side, padx=(int(4 * sc), int(2 * sc)))
             return e
+
+        def field(text: str, width: int, *, unit: str = "", hint: str = "", justify="right") -> tk.Entry:
+            """A labelled setting; its box lines up with the other fields made here (right-aligned)."""
+            r = row()
+            label(r, text)
+            if hint:
+                label(r, hint, fg=p.muted)
+            units = tk.Label(r, text=unit, bg=p.bg, fg=p.muted, font=(font, 9), anchor="w", width=4)
+            units.pack(side="right")
+            return entry(r, width, justify, side="right")
 
         def link(r, text: str, command, side: str = "left") -> tk.Label:
             lbl = tk.Label(r, text=text, bg=p.bg, fg=p.accent, font=(font, 8, "underline"), cursor="hand2")
-            lbl.configure(takefocus=1, highlightthickness=2, highlightbackground=p.bg)
+            lbl.configure(takefocus=1, highlightthickness=2, highlightbackground=p.bg, bd=0)
             ui.focus_ring(lbl, p.text, lambda: p.bg)
             for seq in ("<Button-1>", "<space>", "<Return>"):
                 lbl.bind(seq, lambda e: command())
-            lbl.pack(side=side, padx=(int(6 * sc), 0))
+            first = side != "left" or not r.pack_slaves()
+            lbl.pack(side=side, padx=(0 if first else int(6 * sc), 0))
             return lbl
 
-        def check(text: str, var) -> tk.Checkbutton:
-            c = tk.Checkbutton(
-                parent, text=text, variable=var, bg=p.bg, fg=p.text, activebackground=p.bg,
-                activeforeground=p.text, selectcolor=p.bg, font=(font, 9), anchor="w",
-                highlightthickness=2, highlightbackground=p.bg, highlightcolor=p.text,
-            )  # fmt: skip
-            ui.focus_ring(c, p.text, lambda: p.bg)
-            c.pack(fill="x")
+        def check(text: str, var) -> ui.Check:
+            c = ui.Check(parent, text=text, variable=var, palette=p, scale=sc, font=(font, 9))
+            c.pack(anchor="w", pady=(int(4 * sc), int(2 * sc)))
             return c
 
         heading("FOCUS HEIGHTS · sensor reading at best focus")
@@ -1222,29 +1238,22 @@ class App:
             link(r, "Factory", lambda x=letter: self._settings_factory(x))
 
         heading("BEHAVIOR")
-        r = row()
-        label(r, "Hotkey")
-        self.s_hotkey = entry(r, 14, justify="left")
-        label(r, "empty = off", fg=p.muted)
-        r = row()
-        label(r, "Ask before moving down more than")
-        self.s_confirm = entry(r, 4)
-        label(r, "mm", fg=p.muted)
-        r = row()
-        label(r, "Focus nudge (offset)")
-        self.s_offset = entry(r, 5)
-        label(r, "mm", fg=p.muted)
+        self.s_hotkey = field("Hotkey", 18, hint="empty = off", justify="left")
+        self.s_confirm = field("Ask before moving down more than", 6, unit="mm")
+        self.s_offset = field("Focus nudge (offset)", 6, unit="mm")
         self.s_sounds = tk.BooleanVar(value=True)
         check("Sound when autofocus finishes", self.s_sounds)
 
         heading("MACHINE")
         self.s_invert = tk.BooleanVar(value=False)
-        check("Z moves the wrong way (flip its direction)", self.s_invert)
+        box = check("Z moves the wrong way (flip its direction)", self.s_invert)
+        indent = box.text_x  # the note lines up with the check box's text
         tk.Label(
-            parent, text="Only if autofocus reported that Z moved the opposite way.", bg=p.bg, fg=p.muted,
-            font=(font, 8), anchor="w", wraplength=wrap, justify="left",
-        ).pack(fill="x")  # fmt: skip
+            parent, text="Only if autofocus said Z moved the opposite way.", bg=p.bg, fg=p.muted,
+            font=(font, 8), anchor="w", wraplength=wrap - indent, justify="left", padx=0, bd=0,
+        ).pack(fill="x", padx=(indent, 0))  # fmt: skip
         r = row()
+        r.pack_configure(pady=(int(8 * sc), 0))
         link(r, "Open the settings file (everything else)", self.open_settings)
 
         self.s_save = ui.RoundButton(
@@ -1520,7 +1529,8 @@ class App:
         try:
             diag = driver.diagnose(driver.usb_devices())
         except OSError as e:
-            self._set_status(str(e), ERR)
+            self._set_status("USB check failed", ERR)
+            self._set_detail(str(e))
             return
         if diag.state in (driver.State.OK, driver.State.NO_LASER):
             self._info(diag.message)
@@ -1539,7 +1549,7 @@ class App:
     def _run_driver_installer(self, installer: Path) -> None:
         from . import driver
 
-        self._post("status", "Waiting for the driver installer…", BUSY)
+        self._post("status", "Installing the driver…", BUSY)
         driver.run_installer(installer)
         self._post("status", "Driver installer finished", WARN)
         self._post("detail", "Unplug and replug the laser's USB cable.")

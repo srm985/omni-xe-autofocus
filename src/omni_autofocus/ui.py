@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import functools
 import math
 import os
 import struct
@@ -123,28 +124,29 @@ def _mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[in
     return tuple(round(x + (y - x) * t) for x, y in zip(a, b, strict=True))  # type: ignore[return-value]
 
 
-def rounded_rect_png(
-    w: int, h: int, r: float, fill: str, bg: str, ring: str | None = None, ring_inset: float = 3.0
-) -> bytes:
-    """A filled rounded rectangle on ``bg`` as PNG bytes, edges antialiased via a signed distance
-    field. ``ring`` adds a thin inner outline (keyboard focus)."""
-    f, b = _rgb(fill), _rgb(bg)
-    ring_rgb = _rgb(ring) if ring else None
-    half_w, half_h = w / 2, h / 2
-    top: list[bytes] = []
-    for y in range((h + 1) // 2):
-        qy = abs(y + 0.5 - half_h) - (half_h - r)
+def _box_sdf(px: float, py: float, half_w: float, half_h: float, r: float) -> float:
+    """Signed distance from a pixel centre to a rounded rectangle centred on (half_w, half_h); < 0 inside."""
+    qx = abs(px - half_w) - (half_w - r)
+    qy = abs(py - half_h) - (half_h - r)
+    return math.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0) - r
+
+
+def _cover(d: float) -> float:
+    """Pixel coverage for a signed distance (one-pixel antialiasing ramp)."""
+    return min(max(0.5 - d, 0.0), 1.0)
+
+
+def _png(w: int, h: int, pixel, *, mirror: bool = False) -> bytes:
+    """PNG bytes for a w×h RGB image; ``pixel(x, y)`` gives each pixel's (r, g, b). ``mirror``: the
+    image is symmetric top to bottom, so only the top half is computed."""
+    rows: list[bytes] = []
+    for y in range((h + 1) // 2 if mirror else h):
         row = bytearray([0])  # PNG filter: none
         for x in range(w):
-            qx = abs(x + 0.5 - half_w) - (half_w - r)
-            d = math.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0) - r  # < 0 inside
-            colour = f
-            if ring_rgb is not None:
-                cover = min(max(0.5 - (abs(d + ring_inset) - 0.75), 0.0), 1.0)
-                colour = _mix(f, ring_rgb, cover * 0.85)
-            row += bytes(_mix(b, colour, min(max(0.5 - d, 0.0), 1.0)))
-        top.append(bytes(row))
-    rows = top + top[: h // 2][::-1]
+            row += bytes(pixel(x, y))
+        rows.append(bytes(row))
+    if mirror:
+        rows += rows[: h // 2][::-1]
 
     def chunk(kind: bytes, data: bytes) -> bytes:
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
@@ -152,6 +154,58 @@ def rounded_rect_png(
     header = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
     body = zlib.compress(b"".join(rows), 6)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", body) + chunk(b"IEND", b"")
+
+
+@functools.lru_cache(maxsize=64)  # buttons of one size share their images
+def rounded_rect_png(
+    w: int, h: int, r: float, fill: str, bg: str, ring: str | None = None, ring_inset: float = 3.0
+) -> bytes:
+    """A filled rounded rectangle on ``bg`` as PNG bytes, edges antialiased via a signed distance
+    field. ``ring`` adds a thin inner outline (keyboard focus)."""
+    f, b = _rgb(fill), _rgb(bg)
+    ring_rgb = _rgb(ring) if ring else None
+    solid = -(ring_inset + 2.0) if ring_rgb else -1.0  # further inside than this: plain fill
+
+    def pixel(x: int, y: int) -> tuple[int, int, int]:
+        d = _box_sdf(x + 0.5, y + 0.5, w / 2, h / 2, r)
+        if d <= solid:
+            return f
+        colour = f
+        if ring_rgb is not None:
+            colour = _mix(f, ring_rgb, _cover(abs(d + ring_inset) - 0.75) * 0.85)
+        return _mix(b, colour, _cover(d))
+
+    return _png(w, h, pixel, mirror=True)
+
+
+def _segment_distance(px: float, py: float, a: tuple[float, float], b: tuple[float, float]) -> float:
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    t = min(max(((px - a[0]) * dx + (py - a[1]) * dy) / (dx * dx + dy * dy), 0.0), 1.0)
+    return math.hypot(px - a[0] - t * dx, py - a[1] - t * dy)
+
+
+@functools.lru_cache(maxsize=16)
+def checkbox_png(size: int, checked: bool, palette: Palette, *, border: float = 1.5) -> bytes:
+    """A check box drawn at the screen's scale: an outlined rounded square, or an accent-filled one with
+    a tick. Tk's own check box stays 13 px however large the text is."""
+    p = palette
+    bg, edge, inner = _rgb(p.bg), _rgb(p.muted), _rgb(p.accent if checked else p.bg)
+    mark = _rgb(p.on_accent)
+    half, r = size / 2, size * 0.2
+    tick = ((0.26 * size, 0.52 * size), (0.43 * size, 0.69 * size), (0.75 * size, 0.33 * size))
+    stroke = max(1.5, size * 0.12)
+
+    def pixel(x: int, y: int) -> tuple[int, int, int]:
+        px, py = x + 0.5, y + 0.5
+        d = _box_sdf(px, py, half, half, r)
+        if checked:
+            dt = min(_segment_distance(px, py, tick[0], tick[1]), _segment_distance(px, py, tick[1], tick[2]))
+            colour = _mix(inner, mark, _cover(dt - stroke / 2))
+        else:
+            colour = _mix(edge, inner, _cover(d + border))
+        return _mix(bg, colour, _cover(d))
+
+    return _png(size, size, pixel)
 
 
 class RoundButton(tk.Canvas):
@@ -244,7 +298,8 @@ class RoundButton(tk.Canvas):
 
 
 class Segmented(tk.Frame):
-    """A row of mutually exclusive options, like a toggle group. Click, or Tab to it and press Space."""
+    """A row of mutually exclusive options, like a toggle group. Click, or Tab to it and press Space.
+    ``stretch`` shares the width it is given out equally (pack it with fill="x")."""
 
     def __init__(
         self,
@@ -257,6 +312,7 @@ class Segmented(tk.Frame):
         scale: float = 1.0,
         pad: int = 14,
         labels: dict[str, str] | None = None,
+        stretch: bool = False,
     ):
         super().__init__(parent, bg=palette.border, padx=1, pady=1)
         self.p, self.command = palette, command
@@ -274,7 +330,9 @@ class Segmented(tk.Frame):
                 highlightthickness=2,
                 highlightcolor=palette.text,  # contrasts with both the accent and the background
             )
-            lbl.grid(row=0, column=i, padx=(0 if i == 0 else 1, 0))
+            lbl.grid(row=0, column=i, padx=(0 if i == 0 else 1, 0), sticky="ew")
+            if stretch:
+                self.columnconfigure(i, weight=1, uniform="option")
             lbl.bind("<Button-1>", lambda e, o=option: self.select(o, notify=True))
             lbl.bind("<space>", lambda e, o=option: self.select(o, notify=True))
             focus_ring(lbl, palette.text, lambda o=option: self._bg(o))
@@ -318,3 +376,73 @@ class Segmented(tk.Frame):
                 fg=self.p.on_accent if on else (self.p.text if self.enabled else self.p.muted),
                 font=(FONT, 9, "bold" if on else "normal"),
             )
+
+
+class Check(tk.Frame):
+    """A check box with its label, drawn at the screen's scale and in the theme's colours. Click it
+    (box or text), or Tab to it and press Space. Bound to a ``tk.BooleanVar``."""
+
+    def __init__(self, parent, *, text: str, variable: tk.BooleanVar, palette: Palette, scale: float, font):
+        # The 1 px padding keeps the focus ring off the box and puts the box where a Label's text starts.
+        super().__init__(parent, bg=palette.bg, takefocus=1, cursor="hand2", highlightthickness=2, bd=0)
+        self.configure(highlightbackground=palette.bg, highlightcolor=palette.text, padx=1, pady=1)
+        self.p, self.variable = palette, variable
+        size = round(14 * scale)
+        self._images = {
+            on: tk.PhotoImage(master=self, data=base64.b64encode(checkbox_png(size, on, palette)))
+            for on in (False, True)
+        }
+        self.box = tk.Label(self, bg=palette.bg, bd=0, padx=0, pady=0, cursor="hand2")
+        self.box.pack(side="left")
+        self.label = tk.Label(self, text=text, bg=palette.bg, fg=palette.text, font=font, cursor="hand2")
+        self.label.configure(padx=0, pady=0)
+        gap = round(7 * scale)
+        self.label.pack(side="left", padx=(gap, round(2 * scale)))
+        # Where the text starts, from the widget's left edge (for notes lined up beneath it).
+        self.text_x = 2 + 1 + size + gap + int(self.label.cget("bd"))
+        self._pressed = False
+        for w in (self, self.box, self.label):
+            w.bind("<ButtonPress-1>", self._press)
+            w.bind("<ButtonRelease-1>", self._click)
+        # Space acts on release, and only for a press made here (holding it down must not flicker it).
+        self._key_down = False
+        self.bind("<KeyPress-space>", self._key_press)
+        self.bind("<KeyRelease-space>", self._key_release)
+        focus_ring(self, palette.text, lambda: palette.bg)
+        self.bind("<FocusOut>", lambda e: setattr(self, "_key_down", False), add="+")
+        self._trace = variable.trace_add("write", lambda *_: self._draw())
+        self.bind("<Destroy>", lambda e: self._untrace() if e.widget is self else None)
+        self._draw()
+
+    def _press(self, event) -> None:
+        self._pressed = True
+
+    def _click(self, event) -> None:
+        """Toggle on release over the check box after a press on it (like a native one: dragging off
+        cancels). A click does not take the keyboard focus, like the app's other click targets."""
+        pressed, self._pressed = self._pressed, False
+        if pressed and self.winfo_containing(event.x_root, event.y_root) in (self, self.box, self.label):
+            self._toggle()
+
+    def _key_press(self, event) -> str:
+        self._key_down = True
+        return "break"
+
+    def _key_release(self, event) -> str:
+        if self._key_down:
+            self._key_down = False
+            self._toggle()
+        return "break"
+
+    def _toggle(self, event=None) -> str:
+        self.variable.set(not self.variable.get())
+        return "break"
+
+    def _draw(self) -> None:
+        self.box.configure(image=self._images[bool(self.variable.get())])
+
+    def _untrace(self) -> None:
+        try:
+            self.variable.trace_remove("write", self._trace)
+        except tk.TclError:
+            pass

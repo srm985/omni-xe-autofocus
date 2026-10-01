@@ -49,7 +49,7 @@ Good to know:
 * **The first time** you press Autofocus, the focus heights stored in the laser (ComMarker measures
   them at the factory) are shown; press **Yes** to use and save them. There is nothing to type in.
   If the laser holds no usable values, those from an installed ComMarker Studio are offered instead.
-* If the sensor "sees no surface", the head is far from working height: bring it roughly there with
+* If there is "no surface" in the sensor's range, the head is far from working height: bring it roughly there with
   the machine's Z buttons and press Autofocus again.
 
 ## Lenses
@@ -181,7 +181,7 @@ Each shows old → new and asks before saving.
 ## Troubleshooting
 
 * **"The laser is busy"**: a LightBurn job or the framing preview is running. Stop it, try again.
-* **"sees no surface"**: the sensor measures 120–280 mm and gives the same answer for too near and too
+* **"No surface" / "sees no surface"**: the sensor measures 120–280 mm and gives the same answer for too near and too
   far. Bring the head to roughly working height with the machine's Z buttons.
 * **"ComMarker Studio is running"**: close it (check the system tray too).
 * **"counter moved … expected …"**: the controller did not execute the full move (stall, limit).

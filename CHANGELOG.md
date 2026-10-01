@@ -10,6 +10,8 @@ First public release. Verified on a ComMarker Omni Xe 6W (BSL controller, USB `0
   (Ctrl+Alt+F, configurable as `app.hotkey`); light and dark theme following Windows
 - lens picker (Auto / A / B; Auto follows the LightBurn profile), height check, USB driver check,
   start with Windows, remembers its position
+- sharp at any display scaling: scaled check boxes, tidy Settings fields, long messages wrap
+  instead of being cut off, and one window width in every view
 - Settings in the window: focus heights per lens (type, use the current height, or restore the
   laser's factory value), hotkey (applies at once), finish sound, the down-move question threshold,
   focus nudge, and the Z direction switch; values are checked before saving

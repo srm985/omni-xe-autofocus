@@ -1,3 +1,6 @@
+import gc
+import json
+import os
 import time
 
 import pytest
@@ -206,11 +209,9 @@ def test_first_run_shows_the_calibration_and_can_cancel(window, monkeypatch, tmp
 def test_lens_summary():
     why = "lens B (150 mm field, from the only BSL profile in LightBurn, 'BSLFiber')"
     assert app.lens_summary("Auto", why, 222.0) == "Auto → 150 mm (B) · LightBurn 'BSLFiber' · 222.0 mm"
-    assert (
-        app.lens_summary("A", "lens A (set explicitly)", None) == "70 mm (A) lens · focus read on first use"
-    )
+    assert app.lens_summary("A", "lens A (set explicitly)", None) == "70 mm (A) lens · focus not read"
     assert app.lens_summary("Auto", "lens A (from ComMarker Studio's lens setting; x)", 181.0) == (
-        "Auto → 70 mm (A) · ComMarker Studio setting · 181.0 mm"
+        "Auto → 70 mm (A) · ComMarker Studio · 181.0 mm"
     )
 
 
@@ -223,6 +224,159 @@ def test_rounded_button_image_is_a_valid_png():
 
     png = ui.rounded_rect_png(40, 20, 6, "#1859a0", "#ffffff", ring="#ffffff")
     assert png.startswith(b"\x89PNG") and b"IEND" in png
+
+
+def _png_rows(png: bytes) -> tuple[int, int, list[bytes]]:
+    import struct
+    import zlib
+
+    w, h = struct.unpack(">II", png[16:24])
+    start = png.index(b"IDAT") + 4
+    length = struct.unpack(">I", png[start - 8 : start - 4])[0]
+    raw = zlib.decompress(png[start : start + length])
+    stride = 1 + 3 * w
+    assert len(raw) == h * stride  # exactly h rows, no more
+    return w, h, [raw[i * stride : (i + 1) * stride] for i in range(h)]
+
+
+def test_button_and_check_box_images():
+    from omni_autofocus import ui
+
+    w, h, rows = _png_rows(ui.rounded_rect_png(40, 21, 6, "#1859a0", "#ffffff", ring="#ffffff"))
+    assert (w, h, len(rows)) == (40, 21, 21) and rows == rows[::-1]  # odd height, mirrored halves
+    for on in (False, True):
+        w, h, rows = _png_rows(ui.checkbox_png(25, on, ui.DARK))
+        assert (w, h) == (25, 25) and all(len(r) == 1 + 3 * 25 for r in rows)
+        inside = rows[12][1 + 3 * 3 : 1 + 3 * 4]  # inside the box, left of the tick
+        assert inside == bytes(ui._rgb(ui.DARK.accent if on else ui.DARK.bg))
+
+
+def test_check_box_widget_toggles_and_lets_go_of_its_variable(window):
+    import tkinter as tk
+
+    from omni_autofocus import ui
+
+    top = tk.Toplevel(window.root)
+    var = tk.BooleanVar(master=top, value=False)
+    box = ui.Check(top, text="Sound", variable=var, palette=ui.LIGHT, scale=1.75, font=("Segoe UI", 9))
+    box.pack()
+    top.update()
+    assert box.text_x == box.label.winfo_x() + int(box.label.cget("bd"))  # where the text really starts
+    assert box._toggle() == "break" and var.get() is True
+    assert str(box.box.cget("image")) == str(box._images[True])
+    var.set(False)  # the variable drives the picture too
+    assert str(box.box.cget("image")) == str(box._images[False])
+
+    class Mouse:  # a press or release at some screen point
+        x_root = y_root = 0
+
+    for over, expect in ((box.label, True), (None, True), (box.box, False)):  # None: released elsewhere
+        box.winfo_containing = lambda x, y, over=over: over
+        box._press(Mouse())
+        box._click(Mouse())
+        assert var.get() is expect
+    box._click(Mouse())  # a release without a press here (the press was elsewhere) does nothing
+    assert var.get() is False
+    box._key_release(None)  # a release without a press here (e.g. Space held in a dialog) does nothing
+    assert var.get() is False
+    box._key_press(None), box._key_press(None), box._key_release(None)  # held down: one toggle
+    assert var.get() is True
+    box.destroy()
+    assert not var.trace_info()
+    top.destroy()
+    del var, box, top
+    gc.collect()  # free the Tk objects here, on the Tk thread, not later from a worker thread
+
+
+def test_window_keeps_its_width_in_every_view_and_with_long_text(window):
+    w = window
+    w.root.update_idletasks()
+    width = w.root.winfo_reqwidth()
+
+    def same_width(what: str) -> None:
+        w.root.update_idletasks()
+        assert w.root.winfo_reqwidth() == width, what
+
+    hint, lens_line = w.hint.cget("text"), w.lens_info.cget("text")
+    w.hint.configure(text="Ctrl + Shift + Alt + Win + F12 is taken · ⋯ → Settings")
+    w._set_status("Installing the driver…", app.INFO)
+    w._set_detail(r"C:\Users\someone\AppData\Roaming\omni-autofocus\config.toml " * 3)
+    long_name = "lens B (LightBurn 'A very long device name here')"
+    w.lens_info.configure(text=app.lens_summary("Auto", long_name, 222.0))
+    same_width("long texts")
+    w._set_detail(" ")
+    w.hint.configure(text=hint)
+    w.lens_info.configure(text=lens_line)
+    w.open_settings_view()
+    assert w.settings_open
+    same_width("settings")
+    w._close_settings()
+    w.open_fine_tune()
+    assert w.tune is not None
+    same_width("fine-tune")
+    for stage in ("burn", "result"):
+        w.tune["stage"] = stage
+        w._tune_render()
+        same_width(stage)
+    w._close_tune()
+    w._set_status("Ready", app.INFO)
+
+
+WIDTHS_AT_SCALE = """
+import json, sys, tkinter as tk
+scale = float(sys.argv[1])
+class Scaled(tk.Tk):
+    def __init__(self, *a, **k):
+        try:
+            super().__init__(*a, **k)
+        except tk.TclError:
+            sys.exit(77)  # no display: the only reason to skip
+        self.tk.call("tk", "scaling", scale * 96 / 72)
+tk.Tk = Scaled
+from omni_autofocus import app
+from pathlib import Path
+import time
+w = app.App(config_path=Path(sys.argv[2]), simulate=True)
+deadline = time.monotonic() + 20
+while (w.busy or not w.events.empty()) and time.monotonic() < deadline:  # the startup reading
+    w.root.update()
+    time.sleep(0.01)
+assert not w.busy, "the app did not finish starting"
+widths = []
+def width():
+    w.root.update_idletasks()
+    widths.append(w.root.winfo_reqwidth())
+w.hint.configure(text="Ctrl + Shift + Alt + Win + F12 is taken · ⋯ → Settings")
+w._set_detail("Measured 222.0 mm. Use it only with the 150 mm (B) lens fitted and Z at its best focus. " * 2)
+width()
+w.open_settings_view(); assert w.settings_open; width(); w._close_settings()
+w.open_fine_tune(); assert w.tune is not None; width()
+w.tune["stage"] = "result"; w._tune_render(); width()
+w._close_tune()
+from omni_autofocus import ui
+print(json.dumps([widths, w.button.winfo_reqwidth(), int(20 * ui.scale_of(w.root))]))
+w.root.destroy()
+"""
+
+
+@pytest.mark.parametrize("scale", [1.25, 1.75, 2.0])
+def test_window_width_is_the_same_in_every_view_on_scaled_displays(tmp_path, scale):
+    # A process of its own: the scaling is fixed when the window is made, and Tk allows one window here.
+    import subprocess
+    import sys
+
+    pytest.importorskip("tkinter")
+    env = {**os.environ, "LOCALAPPDATA": str(tmp_path), "APPDATA": str(tmp_path), "PYTHONUTF8": "1"}
+    out = subprocess.run(
+        [sys.executable, "-c", WIDTHS_AT_SCALE, str(scale), str(tmp_path / "settings.toml")],
+        capture_output=True, text=True, encoding="utf-8", env=env, timeout=60,
+    )  # fmt: skip
+    if out.returncode == 77:
+        pytest.skip("no Tk display")
+    assert out.returncode == 0, out.stderr
+    widths, button, margin = json.loads(out.stdout.strip().splitlines()[-1])
+    assert len(set(widths)) == 1, widths
+    assert widths[0] == button + 2 * margin  # nothing is wider than the Autofocus button
 
 
 def test_motion_fault_latches_until_z_follows_again(window, monkeypatch):
@@ -437,7 +591,7 @@ def test_lens_summary_for_the_commarker_fallback_does_not_claim_lightburn():
         "lens B (from ComMarker Studio's lens setting; several BSL profiles in LightBurn, which does not "
         "record the one in use)"
     )
-    assert app.lens_summary("Auto", why, 222.0) == "Auto → 150 mm (B) · ComMarker Studio setting · 222.0 mm"
+    assert app.lens_summary("Auto", why, 222.0) == "Auto → 150 mm (B) · ComMarker Studio · 222.0 mm"
 
 
 def test_picker_shows_lens_sizes_with_the_letters(window):
