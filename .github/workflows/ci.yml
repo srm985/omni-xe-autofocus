@@ -39,14 +39,14 @@ jobs:
         with:
           name: omni-autofocus-windows
           path: |
-            dist/OmniAutofocus-Setup-*.exe
+            dist/OmniAutofocus-Setup.exe
             dist/OmniAutofocus.exe
             dist/omni-autofocus.exe
       - if: startsWith(github.ref, 'refs/tags/v')
+        run: python tools/release_notes.py ${{ github.ref_name }} ${{ github.repository }} release-notes.md
+      # Only the installer: it contains both programs, so users have one file to pick.
+      - if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/OmniAutofocus-Setup-*.exe
-            dist/OmniAutofocus.exe
-            dist/omni-autofocus.exe
-          generate_release_notes: true
+          files: dist/OmniAutofocus-Setup.exe
+          body_path: release-notes.md

@@ -1,5 +1,5 @@
 # Build dist\omni-autofocus.exe (command line), dist\OmniAutofocus.exe (app) and, if Inno Setup 6 is
-# installed, dist\OmniAutofocus-Setup-<version>.exe. Requires: pip install -e ".[build]"
+# installed, dist\OmniAutofocus-Setup.exe. Requires: pip install -e ".[build]"
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root

@@ -26,7 +26,7 @@ power switch for motion steps.
 | 13 | `omni-autofocus focus-ladder`: burns from −4 to +4 mm at near-threshold power | **yes** | good range is centred on 0 (else the tool saves the centre) |
 | 14 | `omni-autofocus calibration` | no | lists 181 / 222 mm, 70 / 150 mm fields, Z axis 1 at 800 pulses/mm |
 | 15 | `set-focus` (value / `--here` / `--factory`), `config set`, `calibration` with a scratch settings file | no | values saved and compared as shown |
-| 16 | Install `OmniAutofocus-Setup-<version>.exe`, open the app from the Start menu; first Autofocus | **yes** | first-use dialog lists 181 / 222 mm; after Yes: "In focus" |
+| 16 | Install `OmniAutofocus-Setup.exe`, open the app from the Start menu; first Autofocus | **yes** | first-use dialog lists 181 / 222 mm; after Yes: "In focus" |
 | 17 | Hotkey Ctrl+Alt+F while LightBurn has focus | **yes** | autofocus runs, chime, "In focus" or "Already in focus" |
 | 18 | Open LightBurn's framing preview, press Autofocus | no | "Stopped": the laser is busy |
 | 19 | Lens picker A / B / Auto, ⋯ → Check height | no | lens line updates; height shown, nothing moves |

@@ -14,8 +14,9 @@ https://github.com/user-attachments/assets/ea3971f7-8c9f-45ab-8335-5f9e9e3c0a30
 
 ## Install
 
-1. Download **`OmniAutofocus-Setup-<version>.exe`** from the [Releases page](https://github.com/srm985/omni-xe-autofocus/releases) and run it. No
-   administrator rights are needed. Windows may say it "protected your PC" because the installer is
+1. **[Download OmniAutofocus-Setup.exe](https://github.com/srm985/omni-xe-autofocus/releases/latest/download/OmniAutofocus-Setup.exe)**
+   (latest version; older ones are on the [Releases page](https://github.com/srm985/omni-xe-autofocus/releases))
+   and run it. No administrator rights are needed. Windows may say it "protected your PC" because the installer is
    not code-signed: click **More info → Run anyway**.
 2. Leave **Start Omni Autofocus when Windows starts** ticked.
 3. The Omni Autofocus window opens. Drag it next to LightBurn; it stays on top and remembers where you

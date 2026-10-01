@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0 (unreleased)
+## 1.0.0 (2026-10-01)
 
 First public release. Verified on a ComMarker Omni Xe 6W (BSL controller, USB `04B4:1004`).
 
