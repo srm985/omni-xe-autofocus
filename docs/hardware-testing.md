@@ -1,6 +1,7 @@
 # Hardware bring-up checklist
 
-Status (2026-10-01): every step except 10 and 11 passes on an Omni Xe 6W; see the log below. On a
+Status (2026-10-01): steps 1-9 and 12-15 pass on an Omni Xe 6W; 10, 11 and the app steps 16-20 are
+still to do (an early app build focused once on hardware, see the log). On a
 new machine, go through the steps in order and stop at the first surprise. Run each command with
 `-vv` the first time so the raw USB frames are printed; save the output if anything looks wrong.
 
@@ -25,6 +26,11 @@ power switch for motion steps.
 | 13 | `omni-autofocus focus-ladder`: burns from −4 to +4 mm at near-threshold power | **yes** | good range is centred on 0 (else the tool saves the centre) |
 | 14 | `omni-autofocus calibration` | no | lists 181 / 222 mm, 70 / 150 mm fields, Z axis 1 at 800 pulses/mm |
 | 15 | `set-focus` (value / `--here` / `--factory`), `config set`, `calibration` with a scratch settings file | no | values saved and compared as shown |
+| 16 | Install `OmniAutofocus-Setup-<version>.exe`, open the app from the Start menu; first Autofocus | **yes** | first-use dialog lists 181 / 222 mm; after Yes: "In focus" |
+| 17 | Hotkey Ctrl+Alt+F while LightBurn has focus | **yes** | autofocus runs, chime, "In focus" or "Already in focus" |
+| 18 | Open LightBurn's framing preview, press Autofocus | no | "Stopped": the laser is busy |
+| 19 | Lens picker A / B / Auto, ⋯ → Check height | no | lens line updates; height shown, nothing moves |
+| 20 | ⋯ → Fine-tune focus, then press the hotkey during the ladder | yes (ladder only) | the app refuses: another window is using the laser |
 
 If step 6 moves the wrong way (sensor change ≈ −1 mm): set `invert_direction = true` in `[z_axis]`
 and repeat 6–7. If the distance is off by a constant factor, check `pitch_pulse`/`screw_pitch`.
@@ -50,4 +56,4 @@ Results log (fill in):
 | 2026-10-01 | 13 | inconclusive | 0, -1, -2, +1, +2 mm marks hard to tell apart (galvo depth of field). Values match ComMarker's factory note card (222 / 181), so defaults kept. Ladder redesigned for dialling in: -4..+4 mm, one-directional approach, near-threshold power, lowest/highest good mark -> midpoint saved as the lens focus height |
 | 2026-10-01 | 14 | pass | `calibration` read the factory values from the laser: 181/222 mm, 70/150 mm fields, Z axis 1 at 800 pulses/mm, reversed. Needed two fixes found on hardware: a second `qCompress` layer, and a 1 ms sleep before flash-state polls (otherwise an empty fetch) |
 | 2026-10-01 | 15 | pass | scratch settings file: first run read the calibration from the laser; `--factory` read 222.0; `--here` measured 224.3 (head left 2 mm high by the ladder run); typed values for lens B and A saved independently; 35 mm rejected; `calibration` flagged the lens A change; `config set` validated keys; `focus --dry-run` used target + offset (222.2) |
-
+| 2026-10-01 | 17 (early) | pass, unplanned | an app test sent the hotkey while the laser was, unexpectedly, connected: real autofocus ran, net −1.8 mm, ended "In focus" at 222.0 mm. Not a planned test; the user had not okayed the move |

@@ -4,25 +4,53 @@
 
 First public release. Verified on a ComMarker Omni Xe 6W (BSL controller, USB `04B4:1004`).
 
-- `focus`: measure with the built-in height sensor and move Z to ComMarker Studio's focus height,
-  with confirmation, dry run, a move safety limit and a second correction pass; exits 3 with a
-  warning if it ends more than 0.5 mm from focus
-- automatic lens selection from the active LightBurn BSL profile's field size (fallback: ComMarker
-  Studio's lens setting), always printed; `--lens` overrides
-- median of several sensor readings per measurement (the sensor wobbles about ±0.2 mm)
-- every Z move is checked against the controller's own axis position counter
+### Omni Autofocus app and installer
+
+- one-click autofocus in a small always-on-top window next to LightBurn, plus a global hotkey
+  (Ctrl+Alt+F, configurable as `app.hotkey`); light and dark theme following Windows
+- lens picker (Auto / A / B; Auto follows the LightBurn profile), height check, fine-tuning, USB
+  driver check, start with Windows, remembers its position
+- moving up never asks; a move down of more than 10 mm (`app.confirm_down_above_mm`) asks first, with
+  "No" as the default
+- first use shows the focus heights read from the laser and saves them only after you accept
+- per-user installer (no administrator rights): Start-menu shortcuts, optional start with Windows,
+  closes a running app gracefully on upgrade/uninstall, refuses while a fine-tuning run uses the laser
+
+### Focusing and safety
+
+- measure with the built-in height sensor (median of 3 readings), move Z to the lens's focus height,
+  re-check with a second pass; exits 3 with a warning if it ends more than 0.5 mm from focus
+- every Z move is checked twice: against the controller's position counter, and by the sensor
+  reading, which must change by roughly the commanded amount in the same direction
+- until Z has been seen to follow, a move longer than 4 mm starts with a checked 3 mm probe, so a
+  reversed axis travels at most 3 mm the wrong way; after a motion fault every move asks first
+- refuses to move while LightBurn runs a job or its framing preview; coexists with a connected
+  LightBurn; a cross-process lock keeps two Omni Autofocus programs from moving Z at once
+- settings values are range-checked, so no value can switch off a safety limit
+
+### Calibration
+
+- factory calibration read from the laser's flash on first use (`calibration` command,
+  `config init --from-laser`); ComMarker Studio's files are used only when the laser holds no usable
+  calibration; built-in example values are never used silently
 - `focus-ladder`: dial in focus with test burns from -4..+4 mm (one-directional approach), then save
-  the centre of the good range as the lens focus height; asks to close LightBurn's preview if busy
-- coexists with LightBurn: restores its run state after a move, refuses to move while a job runs
-- factory calibration read from the laser's flash on first run (`calibration` command,
-  `config init --from-laser`); no built-in focus values are used silently
-- `set-focus VALUE | --here | --factory` to set a lens's focus height by hand, by measurement
-  or back to the laser's value; `config set SECTION.KEY VALUE` for any setting
-- `driver`: tells apart a missing laser, a missing driver and the wrong driver, and explains the
-  fix; offers to run ComMarker's driver installer when it is on the PC or the laser's USB stick.
-  Commands that cannot find the laser give the same diagnosis
+  the centre of the good range as the lens focus height
+- `set-focus VALUE | --here | --factory`, `config set SECTION.KEY VALUE`
+- automatic lens selection from the active LightBurn BSL profile's field size (fallback: ComMarker
+  Studio's lens setting), always shown; `--lens` and the app's lens picker override it
+
+### Command line and tools
+
+- `focus`, `focus-ladder`, `height`, `move-z`, `status`, `devices`, `driver`, `calibration`,
+  `set-focus`, `config`, `app`; `--simulate` runs everything against a protocol-level simulator
+- `driver`: tells apart a missing laser, a missing driver and the wrong driver, explains the fix, and
+  offers to run ComMarker's driver installer when it is on the PC or the laser's USB stick
+- the console window stays open after a double-click or a shortcut (closes 5 s after success)
 - Windows only for now (macOS and Linux are not supported)
-- `height`, `move-z`, `status`, `devices` and `config` commands
-- settings import from an installed ComMarker Studio (`config init --from-commarker`)
-- `--simulate` mode and a protocol-level simulator for hardware-free development
-- standalone Windows `.exe`; double-clicking it runs autofocus
+
+### For LightBurn
+
+- `docs/lightburn-kit/`: pitch, gap analysis against LightBurn's bundled BSL library, integration
+  guide and byte-exact test vectors
+
+MIT licence: free to use, please credit.
