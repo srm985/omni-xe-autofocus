@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from omni_autofocus import autofocus, commands, config, framing
@@ -98,7 +100,8 @@ def test_data_sequence_wraps_1_to_15():
 
 def test_end_to_end_focus_plan_and_move():
     board, ctl = make(sensor_mm=205.0)
-    s = config.Settings()  # lens B, target 222 mm
+    s = config.Settings()
+    s = replace(s, focus=replace(s.focus, lens="b"))  # target 222 mm
     p = autofocus.plan(ctl.read_height(), s)
     assert p.move_mm == pytest.approx(17.0)
     ctl.move_axis(s.z_axis.axis_params(), p.pulses)

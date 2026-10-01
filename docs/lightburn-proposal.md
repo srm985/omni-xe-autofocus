@@ -50,7 +50,9 @@ tool's `config init --from-commarker` decodes the file).
 
 * Map the existing BSL "Enable Z" settings to axis 1 / 800 steps per mm for this machine profile.
 * Add an "Auto-focus" action for BSL devices with a sensor: read height, compute the move, move Z,
-  re-measure once. Expose per-lens target distances and an offset.
+  re-measure once. Expose per-lens target distances and an offset. LightBurn already knows the active
+  lens (one device profile per lens), so the right target can follow the profile. The reference tool
+  does this from outside by matching the profile's field size.
 * Treat the sensor's ±0.2 mm noise with a median of a few readings, and verify the move with the
   axis position counter (`AA07` bytes 16–19).
 

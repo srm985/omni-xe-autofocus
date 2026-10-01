@@ -31,10 +31,22 @@ omni-autofocus --simulate focus     # try everything against a built-in simulato
 
 `-y` skips confirmation, `--lens a|b` picks the lens, `-v`/`-vv` add logging and raw USB frame dumps.
 
+## Lenses
+
+The Omni takes two field lenses, and each has its own focus height. The focus height is stored as a
+**sensor reading**, the distance the height sensor sees at best focus: 222 mm for lens B (150×150 mm
+field) and 181 mm for lens A (70×70) on the tested machine. The tool picks the lens automatically and
+prints its choice on every run:
+
+1. `--lens a|b` (or `focus.lens` in the settings) wins if given.
+2. Otherwise **LightBurn**: the field size of your BSL device profile (the last-used one, or the only
+   one). With one LightBurn profile per lens, as LightBurn recommends for galvos, switching profiles
+   in LightBurn switches the focus height.
+3. Otherwise ComMarker Studio's lens setting ("Galvo B").
+
 ## Settings
 
-Defaults match the tested Omni Xe 6W: lens B (150×150 mm field) with focus at a **sensor reading** of
-222 mm, lens A (70×70) at 181 mm, and Z on axis 1 at 800 pulses/mm. If your machine differs, copy the
+Defaults match the tested Omni Xe 6W (focus heights above, Z on axis 1 at 800 pulses/mm). If your machine differs, copy the
 values from your ComMarker Studio install:
 
 ```bash
@@ -47,7 +59,8 @@ Settings live in `%APPDATA%\omni-autofocus\config.toml`. You can override the lo
 
 | key | meaning |
 |---|---|
-| `focus.lens` | `"a"` or `"b"` |
+| `focus.lens` | `"auto"` (default), `"a"` or `"b"` |
+| `focus.field_a_mm`, `focus.field_b_mm` | lens field sizes used to recognise LightBurn profiles |
 | `focus.offset_mm` | added to the focus distance: fine-tune focus, or defocus on purpose |
 | `focus.max_move_mm` | refuse larger single moves (default 60) |
 | `focus.samples` | sensor readings per measurement (median, default 3) |

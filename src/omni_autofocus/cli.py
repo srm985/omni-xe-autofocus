@@ -13,7 +13,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from . import __version__, autofocus, config
+from . import __version__, autofocus, config, lens
 from .controller import Controller, ControllerError
 
 log = logging.getLogger("omni_autofocus")
@@ -80,6 +80,19 @@ def _settings(args) -> config.Settings:
     return s
 
 
+def _settings_with_lens(args) -> config.Settings:
+    """Settings with the lens resolved (explicit, LightBurn, then ComMarker); prints the choice."""
+    s = _settings(args)
+    try:
+        s, why = lens.resolve(s)
+    except lens.LensError:
+        if not _SIMULATE:
+            raise
+        s, why = replace(s, focus=replace(s.focus, lens="b")), "lens B (simulation default)"
+    print(f"Using {why}: focus at sensor reading {s.focus.target_mm:.1f} mm")
+    return s
+
+
 # --- commands ----------------------------------------------------------------------------------------
 
 
@@ -113,12 +126,12 @@ def cmd_status(args) -> int:
 
 def cmd_height(args) -> int:
     _check_other_software(args.force)
-    s = _settings(args)
+    s = _settings_with_lens(args)
     dev, ctl = _open_controller()
     with dev:
         for i in range(args.count):
             h = ctl.read_height()
-            print(f"{h:.3f} mm   (focus target {s.focus.target_mm:.3f} mm, lens {s.focus.lens.upper()})")
+            print(f"{h:.3f} mm   (focus target {s.focus.target_mm:.3f} mm)")
             if i + 1 < args.count:
                 time.sleep(args.interval)
     return 0
@@ -158,7 +171,7 @@ def _try_height(ctl: Controller) -> float | None:
 
 def cmd_focus(args) -> int:
     _check_other_software(args.force)
-    s = _settings(args)
+    s = _settings_with_lens(args)
     dev, ctl = _open_controller()
     with dev:
         for iteration in range(1, args.passes + 1):
@@ -213,7 +226,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=__version__)
     p.add_argument("-v", "--verbose", action="count", default=0, help="-v: info, -vv: USB frame dump")
     p.add_argument("--config", help="settings file (default: %%APPDATA%%\\omni-autofocus\\config.toml)")
-    p.add_argument("--lens", choices=["a", "b"], help="override the configured lens")
+    p.add_argument(
+        "--lens", choices=["a", "b", "auto"], help="lens A (small field) or B (large field); default: auto"
+    )
     p.add_argument("--force", action="store_true", help="run even if ComMarker Studio is open")
     p.add_argument("--simulate", action="store_true", help="talk to a simulated controller instead of USB")
     sub = p.add_subparsers(dest="command", required=True)

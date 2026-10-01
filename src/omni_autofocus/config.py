@@ -22,9 +22,11 @@ def default_config_path() -> Path:
 
 @dataclass(frozen=True)
 class FocusSettings:
-    lens: str = "b"  # "a" = small field lens, "b" = large field lens (ComMarker's GALVO_B)
+    lens: str = "auto"  # "auto" (from LightBurn, then ComMarker), "a" (small field) or "b" (large field)
     target_a_mm: float = 181.0  # sensor reading at best focus, lens A (fBestFocalDistance)
     target_b_mm: float = 222.0  # sensor reading at best focus, lens B (fBestFocalDistance_B)
+    field_a_mm: float = 70.0  # marking field of lens A (galvoParam.workSize), used by "auto"
+    field_b_mm: float = 150.0  # marking field of lens B (galvo2Param.workSize), used by "auto"
     offset_mm: float = 0.0  # added to the target sensor distance (e.g. to defocus)
     deadband_mm: float = 0.1  # ComMarker skips moves smaller than this
     sensor_min_mm: float = 120.0
@@ -34,8 +36,10 @@ class FocusSettings:
 
     @property
     def target_mm(self) -> float:
-        base = self.target_b_mm if self.lens.lower() == "b" else self.target_a_mm
-        return base + self.offset_mm
+        lens = self.lens.lower()
+        if lens not in ("a", "b"):
+            raise ValueError(f"lens {self.lens!r} has not been resolved to 'a' or 'b'")
+        return (self.target_b_mm if lens == "b" else self.target_a_mm) + self.offset_mm
 
 
 @dataclass(frozen=True)
@@ -146,9 +150,17 @@ def from_commarker(param_cfg: dict, base: Settings | None = None) -> Settings:
     base = base or Settings()
     params = param_cfg["lmcPars"]["params"]
     lmc = next((p for p in params if p.get("parName") == "default"), params[0])
+
+    def field(key: str, default: float) -> float:
+        try:
+            return float(lmc[key]["workSize"]["x"])
+        except (KeyError, TypeError, ValueError):
+            return default
+
     focus = replace(
         base.focus,
-        lens="b" if lmc.get("IsGALVO_B") else "a",
+        field_a_mm=field("galvoParam", base.focus.field_a_mm),
+        field_b_mm=field("galvo2Param", base.focus.field_b_mm),
         target_a_mm=float(lmc.get("fBestFocalDistance", base.focus.target_a_mm)),
         target_b_mm=float(lmc.get("fBestFocalDistance_B", base.focus.target_b_mm)),
         sensor_min_mm=float(lmc.get("fMinDistanceOfSensor", base.focus.sensor_min_mm)),
@@ -173,6 +185,18 @@ def from_commarker(param_cfg: dict, base: Settings | None = None) -> Settings:
     return Settings(focus=focus, z_axis=z)
 
 
+def read_commarker_cfg(install_dir: Path = COMMARKER_DIR) -> dict:
+    return decode_commarker_cfg((install_dir / "config" / "lcsparam.cfg").read_bytes())
+
+
 def load_commarker(install_dir: Path = COMMARKER_DIR) -> Settings:
-    raw = (install_dir / "config" / "lcsparam.cfg").read_bytes()
-    return from_commarker(decode_commarker_cfg(raw))
+    return from_commarker(read_commarker_cfg(install_dir))
+
+
+def commarker_lens(param_cfg: dict) -> str | None:
+    """The lens selected in ComMarker Studio ("Galvo B" checkbox), if recorded."""
+    params = param_cfg["lmcPars"]["params"]
+    lmc = next((p for p in params if p.get("parName") == "default"), params[0])
+    if "IsGALVO_B" not in lmc:
+        return None
+    return "b" if lmc["IsGALVO_B"] else "a"

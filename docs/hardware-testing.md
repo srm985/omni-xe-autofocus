@@ -20,6 +20,8 @@ laser** (both poll the controller continuously). Keep a hand near the power swit
 | 9 | `omni-autofocus focus` | **yes** | ends with `In focus` |
 | 10 | Burn a focus test in LightBurn without touching Z | — | best line at the autofocused height |
 
+| 11 | Create a second LightBurn BSL profile for lens A (70×70), select it, close LightBurn, run `omni-autofocus focus --dry-run` | no | prints "lens A … from last-used LightBurn profile" |
+
 If step 6 moves the wrong way (sensor change ≈ −1 mm): set `invert_direction = true` in `[z_axis]`
 and repeat 6–7. If the distance is off by a constant factor, check `pitch_pulse`/`screw_pitch`.
 If the best focus in step 10 is not at the autofocused height, adjust `focus.offset_mm`.
