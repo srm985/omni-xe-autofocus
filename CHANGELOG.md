@@ -23,8 +23,9 @@ First public release. Verified on a ComMarker Omni Xe 6W (BSL controller, USB `0
 - every Z move is checked twice: against the controller's position counter, and by the sensor
   reading, which must change by roughly the commanded amount in the same direction
 - until Z has been seen to follow, a move longer than 4 mm starts with a checked 3 mm probe and the
-  rest is re-planned from the new reading, so a reversed axis travels at most about 4 mm the wrong
-  way before it is caught; after a motion fault every move asks first
+  rest is re-planned from the new reading (never beyond the approved move), so a reversed axis
+  travels only the 3 mm probe the wrong way; a stall, a lost reading or a wrong direction latches a
+  motion fault, and every move then asks first
 - refuses to move while LightBurn runs a job or its framing preview; coexists with a connected
   LightBurn; a cross-process lock keeps two Omni Autofocus programs from moving Z at once
 - settings values are range-checked (no nan/inf; move limit at most 150 mm, the down-move

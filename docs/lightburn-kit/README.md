@@ -17,7 +17,7 @@ verified on a real Omni Xe 6W; see "Status of the evidence" for what is still pe
 * the per-machine focus calibration, which the factory stores **in the laser itself**, so users type
   nothing in;
 * a working, tested reference implementation that runs next to LightBurn today
-  ([https://github.com/srm985/omni-xe-autofocus](https://github.com/srm985/omni-xe-autofocus), MIT);
+  (in this kit under `src/`, and at https://github.com/srm985/omni-xe-autofocus once public; MIT);
 * the safety checks that a one-click Z move needs;
 * a hardware owner who is happy to test LightBurn beta builds.
 
@@ -51,9 +51,9 @@ alternative, and [integration-guide.md](integration-guide.md) has every byte for
 |---|---|
 | [integration-guide.md](integration-guide.md) | Step-by-step: sensor read, Z move, calibration, safety checks, suggested UI |
 | [test-vectors.json](test-vectors.json) | Byte-exact frames and payloads to unit-test an implementation |
-| [protocol.md](https://github.com/srm985/omni-xe-autofocus/blob/main/docs/protocol.md) | The full protocol notes: framing, every field, what was verified |
-| [hardware-testing.md](https://github.com/srm985/omni-xe-autofocus/blob/main/docs/hardware-testing.md) | What was verified on the machine, step by step |
-| [src/omni_autofocus/](https://github.com/srm985/omni-xe-autofocus/tree/main/src/omni_autofocus) | Reference implementation (Python, standard library only) |
+| [../protocol.md](../protocol.md) | The full protocol notes: framing, every field, what was verified |
+| [../hardware-testing.md](../hardware-testing.md) | What was verified on the machine, step by step |
+| [../../src/omni_autofocus/](../../src/omni_autofocus/) | Reference implementation (Python, standard library only) |
 
 ## Status of the evidence
 
@@ -69,7 +69,7 @@ parameters (also in the calibration).
 
 ## Contact and credit
 
-Sean, [github.com/srm985](https://github.com/srm985), project: [https://github.com/srm985/omni-xe-autofocus](https://github.com/srm985/omni-xe-autofocus). Happy to answer questions, review an implementation against the hardware,
+Sean, [github.com/srm985](https://github.com/srm985). Happy to answer questions, review an implementation against the hardware,
 and test beta builds on an Omni Xe 6W.
 
 This is independent work, not affiliated with ComMarker or BSL. It contains no vendor code. It exists so the laser can be used with other software (interoperability).

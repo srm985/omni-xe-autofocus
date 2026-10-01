@@ -170,8 +170,12 @@ class RoundButton(tk.Canvas):
         self.bind("<ButtonRelease-1>", self._release)
         self.bind("<FocusIn>", lambda e: self._set(focused=True))
         self.bind("<FocusOut>", lambda e: self._set(focused=False))
-        self.bind("<space>", lambda e: self._invoke())
-        self.bind("<Return>", lambda e: self._invoke())
+        # Act on key release, and only for a press that started here: a key held down or pressed
+        # while a dialog was open must not start (or confirm) anything.
+        self._key_down = False
+        for key in ("space", "Return"):
+            self.bind(f"<KeyPress-{key}>", self._key_press)
+            self.bind(f"<KeyRelease-{key}>", self._key_release)
 
     def _image(self, fill: str, focused: bool) -> tk.PhotoImage:
         key = (fill, focused)
@@ -206,6 +210,14 @@ class RoundButton(tk.Canvas):
         if inside:
             self._invoke()
 
+    def _key_press(self, event) -> None:
+        self._key_down = self._key_down or self.enabled
+
+    def _key_release(self, event) -> None:
+        if self._key_down:
+            self._key_down = False
+            self._invoke()
+
     def _invoke(self) -> None:
         if self.enabled and (self.guard is None or self.guard()):
             self.command()
@@ -232,6 +244,7 @@ class Segmented(tk.Frame):
         super().__init__(parent, bg=palette.border, padx=1, pady=1)
         self.p, self.command = palette, command
         self.value = value
+        self.enabled = True
         self._labels: dict[str, tk.Label] = {}
         for i, option in enumerate(options):
             lbl = tk.Label(
@@ -241,8 +254,8 @@ class Segmented(tk.Frame):
                 pady=int(3 * scale),
                 cursor="hand2",
                 takefocus=1,
-                highlightthickness=1,
-                highlightcolor=palette.accent,
+                highlightthickness=2,
+                highlightcolor=palette.text,  # contrasts with both the accent and the background
             )
             lbl.grid(row=0, column=i, padx=(0 if i == 0 else 1, 0))
             lbl.bind("<Button-1>", lambda e, o=option: self.select(o, notify=True))
@@ -250,7 +263,15 @@ class Segmented(tk.Frame):
             self._labels[option] = lbl
         self._paint()
 
+    def set_enabled(self, enabled: bool) -> None:
+        self.enabled = enabled
+        for lbl in self._labels.values():
+            lbl.configure(cursor="hand2" if enabled else "arrow")
+        self._paint()
+
     def select(self, option: str, *, notify: bool = False) -> None:
+        if not self.enabled:
+            return
         changed = option != self.value
         self.value = option
         self._paint()
@@ -260,10 +281,10 @@ class Segmented(tk.Frame):
     def _paint(self) -> None:
         for option, lbl in self._labels.items():
             on = option == self.value
-            bg = self.p.accent if on else self.p.bg
+            bg = (self.p.accent if self.enabled else self.p.accent_disabled) if on else self.p.bg
             lbl.configure(
                 bg=bg,
                 highlightbackground=bg,
-                fg=self.p.on_accent if on else self.p.text,
+                fg=self.p.on_accent if on else (self.p.text if self.enabled else self.p.muted),
                 font=(FONT, 9, "bold" if on else "normal"),
             )

@@ -58,6 +58,7 @@ Filename: "{app}\OmniAutofocus.exe"; Description: "Open Omni Autofocus now"; Fla
 
 [UninstallDelete]
 Type: files; Name: "{localappdata}\omni-autofocus\app-state.json"
+Type: files; Name: "{localappdata}\omni-autofocus\app-state-simulation.json"
 Type: dirifempty; Name: "{localappdata}\omni-autofocus"
 
 [Code]

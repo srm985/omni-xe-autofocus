@@ -572,3 +572,56 @@ def test_focus_rejects_zero_passes(capsys):
     from omni_autofocus import cli
 
     assert cli.main(["--simulate", "--lens", "b", "focus", "--passes", "0"]) == 2
+
+
+def _sim(sensor_mm=205.0, **kw):
+    from omni_autofocus.controller import Controller
+    from omni_autofocus.simulator import FakeClock, SimulatedBoard
+
+    board = SimulatedBoard(sensor_mm=sensor_mm, **kw)
+    clock = FakeClock()
+    return board, Controller(board, sleep=clock.sleep, clock=clock)
+
+
+def _lens_b():
+    return replace(config.Settings(), focus=replace(config.Settings().focus, lens="b"))
+
+
+def test_stalled_move_is_a_motion_fault_but_busy_is_not(monkeypatch):
+    from omni_autofocus import autofocus
+    from omni_autofocus.controller import Controller, ControllerBusyError, ControllerError
+
+    board, ctl = _sim()
+
+    def stall(self, params, pulses, **kw):
+        raise ControllerError("axis 1 counter moved +100 pulses, expected ±2400")
+
+    monkeypatch.setattr(Controller, "move_axis", stall)
+    with pytest.raises(autofocus.MotionError, match="did not complete"):
+        autofocus.run(ctl, _lens_b())
+
+    def busy(self, params, pulses, **kw):
+        raise ControllerBusyError("busy")
+
+    monkeypatch.setattr(Controller, "move_axis", busy)
+    with pytest.raises(ControllerBusyError):
+        autofocus.run(ctl, _lens_b())
+
+
+def test_rest_after_the_probe_never_exceeds_the_approved_move(monkeypatch):
+    from omni_autofocus import autofocus
+    from omni_autofocus.controller import Controller
+
+    board, ctl = _sim(sensor_mm=232.0, z_pulses_per_mm=800 / 0.88)  # Z travels 12 % short
+    commanded = []
+    real_move = Controller.move_axis
+
+    def record(self, params, pulses, **kw):
+        commanded.append(pulses)
+        return real_move(self, params, pulses, **kw)
+
+    monkeypatch.setattr(Controller, "move_axis", record)
+    approved = []
+    autofocus.run(ctl, _lens_b(), passes=1, confirm=lambda p: approved.append(p.pulses) or True)
+    assert approved[0] == -8000  # down 10 mm
+    assert sum(commanded) >= approved[0]  # never further down than approved (a later pass corrects)

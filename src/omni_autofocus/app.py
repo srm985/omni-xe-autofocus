@@ -87,7 +87,7 @@ def describe_result(r: autofocus.FocusResult) -> tuple[str, str, str]:
     if r.moved:
         return (
             "In focus",
-            f"Moved {updown(sum(p.move_mm for p in r.plans))} · height {r.height_mm:.1f} mm",
+            f"Moved {updown(r.height_mm - r.plans[0].height_mm)} · height {r.height_mm:.1f} mm",  # measured
             OK,
         )
     return "Already in focus", f"Height {r.height_mm:.1f} mm · focus {r.target_mm:.1f} mm", OK
@@ -218,6 +218,16 @@ def _virtual_screen() -> tuple[int, int, int, int]:
     return m(76), m(77), m(78), m(79)  # SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CX..., SM_CY...
 
 
+def _wait_for_keys_released(timeout_s: float = 2.0) -> None:
+    """Return once Enter and Space are up (or after ``timeout_s``)."""
+    if sys.platform != "win32":
+        return
+    state = ctypes.windll.user32.GetAsyncKeyState
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline and any(state(vk) & 0x8000 for vk in (0x0D, 0x20)):
+        time.sleep(0.02)
+
+
 def _beep(ok: bool) -> None:
     try:
         import winsound
@@ -314,7 +324,7 @@ class App:
         self.status.pack(side="left", fill="x", expand=True)
         self.more = tk.Label(head, text="⋯", bg=p.bg, fg=p.muted, font=(font, 14), cursor="hand2")
         self.more.configure(padx=int(8 * sc), pady=int(2 * sc), takefocus=1, highlightthickness=1)
-        self.more.configure(highlightcolor=p.accent, highlightbackground=p.bg)
+        self.more.configure(highlightthickness=2, highlightcolor=p.text, highlightbackground=p.bg)
         self.more.pack(side="right")
         self.detail = tk.Label(
             body, text=" ", bg=p.bg, fg=p.muted, font=(font, 9), anchor="nw", justify="left",
@@ -449,9 +459,14 @@ class App:
         if self.busy:
             self._set_detail("Still working on the last request…")
             return
+        if moves and self._ladder_running():
+            self._set_detail("Fine-tuning is using the laser. Close its window first.")
+            return
         self.busy = True
         self.moving = moves
         self.button.set_enabled(False)
+        if moves:
+            self.lens_picker.set_enabled(False)
         self._set_dot(BUSY)
         threading.Thread(target=self._work, args=(job, *args), daemon=True).start()
 
@@ -521,7 +536,8 @@ class App:
         elif kind == "idle":
             self.busy = False
             self.moving = False
-            self.button.set_enabled(True)
+            self.button.set_enabled(not self._ladder_running())
+            self.lens_picker.set_enabled(True)
             self._set_dot(self._tone)
             if self.root.focus_get() is None or self.root.focus_get() == self.button:
                 self.button.focus_set()
@@ -542,6 +558,7 @@ class App:
 
         self.root.deiconify()
         self.root.lift()
+        _wait_for_keys_released()  # a held or repeated key must not answer the question unseen
         try:
             return messagebox.askyesno(self.title, question, parent=self.root, default=default)
         finally:
@@ -574,17 +591,21 @@ class App:
         def accept(found: config.Settings, source: str) -> bool:  # first use: ask before saving
             f = found.focus
             self._post("status", "First use", BUSY)
+            from_laser = source == "the laser"
             return self._ask(
-                f"Use the focus heights stored in your laser?\n\n"
-                f"Lens A ({f.field_a_mm:g} mm field): {f.target_a_mm:.1f} mm\n"
-                f"Lens B ({f.field_b_mm:g} mm field): {f.target_b_mm:.1f} mm\n\n"
+                (
+                    "Use the focus heights stored in your laser?\n\n"
+                    if from_laser
+                    else "Use these focus heights?\n\n"
+                )
+                + f"Lens A ({f.field_a_mm:g} mm field): {f.target_a_mm:.1f} mm\n"
+                + f"Lens B ({f.field_b_mm:g} mm field): {f.target_b_mm:.1f} mm\n\n"
                 + (
                     "ComMarker measured these at the factory. "
                     if source == "the laser"
                     else f"They come from {source}. "
                 )
                 + "They are saved on this PC; you can fine-tune them later.",
-                default="yes",
             )
 
         s, why, _note = self._session.settings_with_lens(calibrate=calibrate, accept=accept)
@@ -709,19 +730,23 @@ class App:
             [*cmd, *args, "focus-ladder"], creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
         )
         self._set_status("Fine-tuning", BUSY)
-        self._set_detail("Follow the steps in the new window. Autofocus is unavailable until it is closed.")
+        self._set_detail("Follow the steps in the new window. Autofocus is paused until it is closed.")
+        self.button.set_enabled(False)
         self.root.after(1000, self._watch_ladder)
+
+    def _ladder_running(self) -> bool:
+        return self._ladder is not None and self._ladder.poll() is None
 
     def _watch_ladder(self) -> None:
         if self._ladder is not None and self._ladder.poll() is None:
             self.root.after(1000, self._watch_ladder)
             return
         self._ladder = None
-        if self.status.cget("text") == "Fine-tuning":
-            self._set_status("Ready", INFO)
-            self._set_detail("Fine-tuning finished. Put the work piece under the head.")
-            if not self.busy:
-                self._start(self._prepare_quietly)  # pick up a newly saved focus height
+        self._set_status("Ready", INFO)
+        self._set_detail("Fine-tuning finished. Put the work piece under the head.")
+        if not self.busy:
+            self.button.set_enabled(True)
+            self._start(self._prepare_quietly)  # pick up a newly saved focus height
 
     def check_driver(self) -> None:
         from . import driver

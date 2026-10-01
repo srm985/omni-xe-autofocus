@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .config import Settings
-from .controller import ControllerError
+from .controller import ControllerBusyError, ControllerError
 
 
 class FocusError(RuntimeError):
@@ -99,9 +99,9 @@ def is_large_downward(p: FocusPlan, threshold_mm: float) -> bool:
 def check_motion(move_mm: float, change_mm: float, *, inverted: bool = False, strict: bool = False) -> None:
     """Raise :class:`MotionError` unless the sensor reading changed roughly as much as Z was told to
     move, the same way. Sensor noise is about +-0.2 mm, so small moves can never trip it. ``strict``
-    (for the probe step) allows 20 % instead of 50 % scale error, so a wrong pitch is caught before
-    the long part of a move."""
-    slack = 0.2 if strict else 0.5
+    (for the probe step) allows 15 % scale error plus 0.3 mm of noise (about 25 % on the 3 mm probe)
+    instead of 50 % plus 0.5 mm, so a badly wrong pitch is caught before the long part of a move."""
+    slack = 0.15 if strict else 0.5
     noise = 0.3 if strict else 0.5
     wrong_way = move_mm * change_mm < 0 and abs(change_mm) > 0.5
     too_little = abs(change_mm) < (1 - slack) * abs(move_mm) - noise
@@ -147,7 +147,14 @@ def run(
 
     def move(mm: float, pulses: int, start_height: float, *, strict: bool = False) -> float:
         nonlocal verified
-        ctl.move_axis(params, pulses)
+        try:
+            ctl.move_axis(params, pulses)
+        except ControllerBusyError:
+            raise  # refused before moving: a job or the framing preview is running
+        except ControllerError as e:  # stall, end of travel, counter mismatch, lost contact mid-move
+            raise MotionError(
+                f"Z did not complete a {mm:+.1f} mm move ({e}). Stopped; check the Z axis"
+            ) from e
         try:
             new_height = ctl.read_height_median(samples)
         except ControllerError as e:  # e.g. the head left the sensor's range: Z went somewhere unexpected
@@ -187,6 +194,11 @@ def run(
             step = PROBE_MM if p.move_mm > 0 else -PROBE_MM
             height = move(step, params.mm_to_pulses(step), height, strict=True)
             rest = plan(height, settings)  # re-plan from the measured height, not the commanded one
+            allowed = p.move_mm - step  # never command more, in total, than the move that was approved
+            if rest.move_mm * allowed > 0 and abs(rest.move_mm) > abs(allowed):
+                rest = FocusPlan(
+                    rest.height_mm, rest.target_mm, allowed, p.pulses - params.mm_to_pulses(step)
+                )
             if rest.needed:
                 height = move(rest.move_mm, rest.pulses, height)
         else:

@@ -71,14 +71,20 @@ def test_app_section_round_trips(tmp_path):
 def shared_window(tmp_path_factory):
     # One window for the module: Tk cannot always create a second interpreter in one process.
     tk = pytest.importorskip("tkinter")
-    path = tmp_path_factory.mktemp("app") / "app.toml"
+    home = tmp_path_factory.mktemp("app")
+    path = home / "app.toml"
     config.save(config.Settings(app=config.AppSettings(hotkey="", sounds=False)), path)
-    try:
-        w = app.App(config_path=path, simulate=True)
-    except tk.TclError as e:  # no display
-        pytest.skip(f"no Tk display: {e}")
-    yield w
-    w.root.destroy()
+    with pytest.MonkeyPatch.context() as mp:  # module scope: the per-test isolation is not active yet
+        mp.setenv("LOCALAPPDATA", str(home))
+        mp.setenv("APPDATA", str(home))
+        # A test must never block on a real dialog: unanswered questions count as "no".
+        mp.setattr(app.App, "_ask_yes_no", lambda self, q, **kw: False)
+        try:
+            w = app.App(config_path=path, simulate=True)
+        except tk.TclError as e:  # no display
+            pytest.skip(f"no Tk display: {e}")
+        yield w
+        w.root.destroy()
 
 
 @pytest.fixture
@@ -235,3 +241,38 @@ def test_motion_fault_latches_until_z_follows_again(window, monkeypatch):
         board.z_reverse = True
         window.motion_fault = False
         window._verified_axis = None
+
+
+def test_button_acts_on_key_release_of_its_own_press(window):
+    calls = []
+    window.button.command = lambda: calls.append(1)
+    try:
+        window.button._key_release(None)  # release without a press here (e.g. Enter from a dialog)
+        assert calls == []
+        window.button._key_press(None)
+        window.button._key_release(None)
+        assert calls == [1]
+    finally:
+        window.button.command = window.autofocus
+
+
+def test_autofocus_is_paused_while_fine_tuning_runs(window):
+    class Running:
+        def poll(self):
+            return None
+
+    window._ladder = Running()
+    try:
+        window.autofocus()
+        assert not window.busy and "Fine-tuning is using the laser" in window.detail.cget("text")
+    finally:
+        window._ladder = None
+
+
+def test_lens_picker_is_locked_while_z_may_move(window, monkeypatch):
+    seen = []
+    real = window.lens_picker.set_enabled
+    monkeypatch.setattr(window.lens_picker, "set_enabled", lambda e: seen.append(e) or real(e))
+    window.autofocus()
+    settle(window)
+    assert seen[:1] == [False] and seen[-1] is True and window.lens_picker.enabled
