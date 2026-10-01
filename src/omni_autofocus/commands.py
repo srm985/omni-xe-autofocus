@@ -30,6 +30,8 @@ CMD_MOVE_TO_REL = 0x0242  # list command: relative galvo move (used as a list te
 CMD_SET_RUN_STATE = 0xAA10  # immediate: param 3 = run (execute lists), param 1 = reset/stop
 CMD_DELAY = 0x0A00  # list command: delay
 
+AXIS_COUNTER_ORIGIN = 0x40000000
+
 RUN_STATE_RUN = 3
 RUN_STATE_RESET = 1
 
@@ -265,14 +267,23 @@ def parse_dev_state(reply: bytes) -> DevState:
 @dataclass(frozen=True)
 class DevExtState:
     axis_status: tuple[int, int, int]  # low bit set while the axis is moving
+    axis_counters: tuple[int, int]  # raw position counters of axes 0 and 1 (reply bytes 12-15, 16-19)
     raw: bytes
 
     def axis_moving(self, axis_id: int) -> bool:
         return bool(self.axis_status[axis_id] & 1)
+
+    def axis_position(self, axis_id: int) -> int:
+        """Position in pulses relative to the counter's 0x40000000 origin.
+
+        Hardware-confirmed for axis 1 (Z): a +800 pulse move changed the counter by exactly +800.
+        """
+        return self.axis_counters[axis_id] - AXIS_COUNTER_ORIGIN
 
 
 def parse_dev_ext_state(reply: bytes) -> DevExtState:
     if len(reply) < 0x2C or reply[2] != 0:
         raise ValueError(f"bad AA07 reply: {reply[:16].hex(' ')}")
     b26, b27 = reply[0x26 + 2], reply[0x27 + 2]
-    return DevExtState(axis_status=(b26 & 0xF, b26 >> 4, b27 & 0xF), raw=bytes(reply))
+    counters = struct.unpack_from(">II", reply, 12)
+    return DevExtState(axis_status=(b26 & 0xF, b26 >> 4, b27 & 0xF), axis_counters=counters, raw=bytes(reply))

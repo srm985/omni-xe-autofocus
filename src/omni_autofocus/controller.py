@@ -184,14 +184,18 @@ class Controller:
         if len(reply) >= 3 and reply[2] != 0:
             raise ControllerError(f"controller rejected run state {state} (status {reply[2]})")
 
-    def move_axis(self, params: AxisParams, pulses: int, *, timeout_s: float = 120.0) -> None:
+    def move_axis(self, params: AxisParams, pulses: int, *, timeout_s: float = 120.0) -> int | None:
         """Relative move of one auxiliary axis, mirroring ``MarkControl::doMoveAxisPulse``.
 
         Vendor sequence: reset, 10 ms, run, list [axis move, delay], 5 ms, wait for finish, reset.
         The controller only executes list commands while in the run state.
+
+        Returns the change of the axis position counter (pulses actually executed) when the axis has a
+        counter, and raises if it disagrees with the request.
         """
         if pulses == 0:
-            return
+            return 0
+        before = self._axis_position(params.axis_id)
         data = commands.command_list(commands.axis_move_cmd(params, pulses), commands.delay_cmd(1))
         min_duration = commands.estimated_move_seconds(params, pulses)
         self.set_run_state(commands.RUN_STATE_RESET)
@@ -211,3 +215,18 @@ class Controller:
             self.wait_axis_stopped(params.axis_id, timeout_s)
         finally:
             self.set_run_state(commands.RUN_STATE_RESET)
+        after = self._axis_position(params.axis_id)
+        if before is None or after is None:
+            return None
+        moved = after - before
+        expected = round(abs(pulses) * (params.gear_ratio if params.gear_ratio > 0 else 1.0))
+        if abs(moved) != expected:
+            raise ControllerError(
+                f"axis {params.axis_id} counter moved {moved:+d} pulses, expected ±{expected}"
+            )
+        return moved
+
+    def _axis_position(self, axis_id: int) -> int | None:
+        if axis_id > 1:
+            return None
+        return self.ext_state().axis_position(axis_id)

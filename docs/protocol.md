@@ -69,7 +69,8 @@ queries use a 12-byte form (code + 10 zero bytes). In replies, "`getChar(i)`" = 
 
 ### `0xAA07` extended state
 `reply[0x28]` low nibble = axis 0 status, high nibble = axis 1; `reply[0x29]` low nibble = axis 2.
-Bit 0 set = axis moving.
+Bit 0 set = axis moving. `reply[12..15]` / `reply[16..19]` (BE u32) = position counters of axes
+0 / 1, origin `0x40000000`. Hardware-confirmed for axis 1: a +800 pulse move changed it by +800.
 
 ### `0xAAC1` RS-485 pass-through (`Executor7::setDataTransmit2`)
 Data = bytes to transmit (≤ 251). Reply: `reply[2]` = number of bytes received, data at `reply[4]`.

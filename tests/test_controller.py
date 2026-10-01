@@ -46,9 +46,8 @@ def test_move_axis_follows_vendor_run_state_sequence():
     board, ctl = make()
     params = config.Settings().z_axis.axis_params()
     ctl.move_axis(params, 800)
-    codes = [p[:4].hex() for p in cmd_payloads(board)]
-    assert codes[0] == "aa100001" and codes[1] == "aa100003"  # reset, then run
-    assert codes[-1] == "aa100001"  # reset at the end
+    run_states = [p[:4].hex() for p in cmd_payloads(board) if p[:2] == b"\xaa\x10"]
+    assert run_states == ["aa100001", "aa100003", "aa100001"]  # reset, run, ..., reset
     first_data = next(i for i, (ep, _) in enumerate(board.sent_frames) if ep == EP_DATA_OUT)
     run_index = next(i for i, (ep, f) in enumerate(board.sent_frames) if f[6:10].hex() == "aa100003")
     assert run_index < first_data  # run state set before the list goes out
@@ -156,3 +155,22 @@ def test_height_read_retries_until_valid():
 
     board, ctl = make(sensor_mm=150.0, board_cls=FlakySensor)
     assert ctl.read_height() == pytest.approx(150.0)
+
+
+def test_move_returns_counter_delta():
+    board, ctl = make()
+    params = config.Settings().z_axis.axis_params()
+    assert ctl.move_axis(params, 800) == 800
+    assert ctl.move_axis(params, -1600) == -1600
+
+
+def test_counter_mismatch_is_an_error():
+    class StallingBoard(SimulatedBoard):
+        def _axis_move(self, code, body):
+            super()._axis_move(code, body)
+            self.counters[1] -= 5  # 5 pulses lost
+
+    board, ctl = make(board_cls=StallingBoard)
+    with pytest.raises(ControllerError, match="counter moved"):
+        ctl.move_axis(config.Settings().z_axis.axis_params(), 800)
+    assert cmd_payloads(board)[-1][:4].hex() != "aa100003"  # never left in run state

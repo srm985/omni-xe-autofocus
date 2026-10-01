@@ -31,6 +31,7 @@ class SimulatedBoard:
         self.z_reverse = z_reverse
         self.moving_polls = moving_polls
         self._moving = 0
+        self.counters = [0x40000000, 0x40000000]
         self.running = False
         self._pending: list[bytes] = []
         self._rx = b""
@@ -78,6 +79,7 @@ class SimulatedBoard:
         if code == commands.CMD_DEV_EXT_STATE:
             reply = bytearray(0x40)
             reply[0:2] = payload[:2]
+            reply[12:20] = struct.pack(">II", *self.counters)
             nibble_shift = 4 if self.z_axis_id % 2 else 0
             reply[0x28 + self.z_axis_id // 2] = moving << nibble_shift
             return bytes(reply)
@@ -136,6 +138,8 @@ class SimulatedBoard:
             positive = hw_dir == self.z_reverse  # dir bit = (pulses < 0) XOR reverse
             mm = counts[slot] / self.z_pulses_per_mm
             self.sensor_mm += mm if positive else -mm
+            if self.z_axis_id < 2:
+                self.counters[self.z_axis_id] += counts[slot] if positive else -counts[slot]
             self._moving = self.moving_polls
 
 

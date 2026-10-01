@@ -147,3 +147,14 @@ def test_dev_state_hardware_vectors():
     a, b = commands.parse_dev_state(idle), commands.parse_dev_state(queued)
     assert a.finished_flag and not b.finished_flag
     assert a.board_state == b.board_state == 0 and a.free_cache_kb == 32767
+
+
+def test_ext_state_axis_counter_hardware_vectors():
+    # Captured 2026-10-01 before/after a +800 pulse Z move.
+    before = bytes.fromhex(
+        "aa 07 00 00 00 00 80 00 00 00 80 00 40 00 00 00 3f fe 9a 7f" + " 00" * 20 + " cc 00 0f 00"
+    )
+    after = before[:16] + bytes.fromhex("3f fe 9d 9f") + before[20:]
+    a, b = commands.parse_dev_ext_state(before), commands.parse_dev_ext_state(after)
+    assert b.axis_position(1) - a.axis_position(1) == 800
+    assert a.axis_position(0) == 0 and not a.axis_moving(1)

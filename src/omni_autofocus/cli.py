@@ -104,6 +104,7 @@ def cmd_status(args) -> int:
     print(f"board state     : {st.board_state} ({'idle' if st.idle else 'busy'})")
     print(f"free cache      : {st.free_cache_kb} KiB")
     print(f"axis status     : {' '.join(f'{i}:{v:#x}' for i, v in enumerate(ext.axis_status))}")
+    print(f"axis positions  : {' '.join(f'{i}:{ext.axis_position(i):+d}' for i in range(2))} pulses")
     if args.raw:
         print(f"AA05 reply      : {st.raw.hex(' ')}")
         print(f"AA07 reply      : {ext.raw.hex(' ')}")
@@ -138,8 +139,10 @@ def cmd_move_z(args) -> int:
     dev, ctl = _open_controller()
     with dev:
         before = _try_height(ctl)
-        ctl.move_axis(params, pulses)
+        moved = ctl.move_axis(params, pulses)
         after = _try_height(ctl)
+    if moved is not None:
+        print(f"axis counter: {moved:+d} pulses ({moved / params.pulses_per_mm:+.3f} mm at configured pitch)")
     if before is not None and after is not None:
         print(f"sensor: {before:.3f} mm -> {after:.3f} mm (change {after - before:+.3f} mm)")
     return 0
