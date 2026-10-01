@@ -161,13 +161,18 @@ def load(path: Path | None = None) -> Settings:
     unknown = set(data) - set(SECTIONS)
     if unknown:
         raise ValueError(f"unknown section(s): {', '.join(sorted(unknown))}")
-    return validate(
-        Settings(
-            focus=_apply(FocusSettings, data.get("focus", {}), "focus"),
-            z_axis=_apply(ZAxisSettings, data.get("z_axis", {}), "z_axis"),
-            app=_apply(AppSettings, data.get("app", {}), "app"),
-        )
+    settings = Settings(
+        focus=_apply(FocusSettings, data.get("focus", {}), "focus"),
+        z_axis=_apply(ZAxisSettings, data.get("z_axis", {}), "z_axis"),
+        app=_apply(AppSettings, data.get("app", {}), "app"),
     )
+    missing = [k for k in ("target_a_mm", "target_b_mm") if k not in data.get("focus", {})]
+    if missing:  # an empty or cut-short file must not turn into the built-in example heights
+        raise ValueError(
+            f"the settings file {path} has no focus heights ({', '.join(missing)}); delete it to read them "
+            "from the laser again"
+        )
+    return validate(settings)
 
 
 def set_value(settings: Settings, dotted_key: str, text: str) -> Settings:
@@ -221,8 +226,11 @@ def dumps(settings: Settings) -> str:
 
 
 def save(settings: Settings, path: Path) -> None:
+    """Write the settings file atomically: a failed write never leaves it empty or cut short."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(dumps(settings), encoding="utf-8")
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(dumps(settings), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 _MODIFIERS = {"alt": 0x1, "ctrl": 0x2, "control": 0x2, "shift": 0x4, "win": 0x8}
@@ -230,15 +238,24 @@ _NAMED_KEYS = {f"f{i}": 0x6F + i for i in range(1, 13)} | {"space": 0x20, "home"
 
 
 def parse_hotkey(text: str) -> tuple[int, int]:
-    """``"ctrl+alt+f"`` -> (Windows MOD_* flags, virtual-key code). Needs at least one modifier."""
+    """``"ctrl+alt+f"`` -> (Windows MOD_* flags, virtual-key code).
+
+    Needs two modifiers: a one-modifier key such as Ctrl+C or Shift+A is pressed all the time in other
+    programs, and this hotkey moves Z.
+    """
     parts = [p.strip().lower() for p in text.split("+") if p.strip()]
-    if len(parts) < 2:
-        raise ValueError(f"hotkey {text!r} needs a modifier and a key, like ctrl+alt+f")
+    if len(parts) < 3:
+        raise ValueError(
+            f"hotkey {text!r} needs two modifiers and a key, like ctrl+alt+f, so it cannot fire while "
+            "you type"
+        )
     mods = 0
     for p in parts[:-1]:
         if p not in _MODIFIERS:
             raise ValueError(f"unknown modifier {p!r} in hotkey {text!r} (use ctrl, alt, shift, win)")
         mods |= _MODIFIERS[p]
+    if bin(mods).count("1") < 2:
+        raise ValueError(f"hotkey {text!r} needs two different modifiers, like ctrl+alt+f")
     key = parts[-1]
     if len(key) == 1 and key.isalnum():
         vk = ord(key.upper())

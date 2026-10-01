@@ -144,13 +144,14 @@ def test_window_reports_errors(window, monkeypatch):
 
 def test_settings_types_are_checked(tmp_path):
     path = tmp_path / "bad.toml"
-    path.write_text("[app]\nhotkey = true\n")
+    heights = "[focus]\ntarget_a_mm = 181.0\ntarget_b_mm = 222.0\n"
+    path.write_text(heights + "[app]\nhotkey = true\n")
     with pytest.raises(ValueError, match="app.hotkey must be str"):
         config.load(path)
-    path.write_text("[focus]\noffset_mm = 1\nsamples = 5\n")  # ints are fine for float settings
+    path.write_text(heights + "offset_mm = 1\nsamples = 5\n")  # ints are fine for float settings
     s = config.load(path)
     assert s.focus.offset_mm == 1.0 and isinstance(s.focus.offset_mm, float) and s.focus.samples == 5
-    path.write_text("[focus]\nsamples = 2.5\n")
+    path.write_text(heights + "samples = 2.5\n")
     with pytest.raises(ValueError, match="focus.samples must be int"):
         config.load(path)
 
@@ -534,3 +535,103 @@ def test_driver_guidance_in_the_app_points_to_the_menu():
     diag = driver.diagnose([UsbDevice((r"USB\VID_04B4&PID_1004",), "x", "", 28)])
     lines = driver.guidance(diag, staged=True, installer=None, check_again=driver.CHECK_AGAIN_APP)
     assert lines[-1].startswith("Then use ⋯ → Check USB driver") and "omni-autofocus" not in " ".join(lines)
+
+
+def test_settings_blocks_fine_tuning(settings_window):
+    w = settings_window
+    w.open_settings_view()
+    w.open_fine_tune()
+    assert w.tune is None and w.settings_open
+
+
+def test_settings_check_height_plus_nudge(settings_window):
+    w = settings_window
+    w.open_settings_view()
+    w._set_entry(w.s_heights["B"], "279")
+    w._set_entry(w.s_offset, "20")
+    w._settings_save()
+    assert w.status.cget("text") == "Not saved" and "with the +20 mm nudge" in w.detail.cget("text")
+
+
+def test_settings_keep_untouched_values_exactly_and_allow_a_placeholder_lens(settings_window):
+    w = settings_window
+    path = w._session.path
+    s = config.load(path)
+    config.save(
+        config.Settings(focus=config.FocusSettings(target_a_mm=0.0, target_b_mm=222.25), app=s.app), path
+    )
+    w.open_settings_view()
+    assert w.s_heights["B"].get() == "222.25"
+    w._set_entry(w.s_hotkey, "ctrl+shift+k")  # change something else only
+    w._settings_save()
+    settle(w)
+    saved = config.load(path)
+    assert saved.focus.target_a_mm == 0.0 and saved.focus.target_b_mm == 222.25
+    assert saved.app.hotkey == "ctrl+shift+k"
+
+
+def test_settings_reject_one_modifier_hotkeys(settings_window):
+    w = settings_window
+    for bad in ("shift+a", "ctrl+c", "ctrl+ctrl+f"):
+        w.open_settings_view()
+        w._set_entry(w.s_hotkey, bad)
+        w._settings_save()
+        assert w.status.cget("text") == "Not saved" and "two" in w.detail.cget("text"), bad
+        w._close_settings()
+
+
+def test_first_settings_file_builds_on_the_lasers_calibration(settings_window, monkeypatch):
+    from omni_autofocus import session as session_mod
+
+    w = settings_window
+    cfg = {
+        "lmcPars": {
+            "params": [{"parName": "default", "fBestFocalDistance": 180.0, "fBestFocalDistance_B": 221.0}]
+        },
+        "extMarkerPar": {
+            "axisZParExt": {
+                "setting": {"axisId": 1, "bRevRot": True, "pitchPulse": 6400, "screwPitch": 4.0,
+                            "maxRunSpeed": 320.0, "gearRatio": 1.0},
+                "runData": {"startSpeed": 0.0, "runSpeed": 8.0, "accSpeed": 5.0},
+            }
+        },
+    }  # fmt: skip
+    monkeypatch.setattr(session_mod, "read_laser_calibration", lambda ctl: cfg)
+    w._session.path.unlink()
+    w.open_settings_view()
+    w._settings_factory("A")
+    settle(w)
+    w._settings_factory("B")
+    settle(w)
+    w._settings_save()
+    settle(w)
+    saved = config.load(w._session.path)
+    assert saved.z_axis.pitch_pulse == 6400 and saved.focus.target_b_mm == 221.0
+
+
+def test_settings_reading_after_cancel_is_ignored(settings_window):
+    w = settings_window
+    w.open_settings_view()
+    w._settings_factory("A")
+    w._close_settings()  # Cancel while the laser is being read
+    settle(w)
+    assert "Press Save" not in w.detail.cget("text") and not w.settings_open
+
+
+def test_broken_settings_file_offers_to_open_it(settings_window, monkeypatch):
+    w = settings_window
+    w._session.path.write_text("[focus]\n", encoding="utf-8")  # no focus heights
+    asked = []
+    monkeypatch.setattr(w, "_ask_yes_no", lambda q, **kw: asked.append(q) or False)
+    w.open_settings_view()
+    assert not w.settings_open and asked and "has a problem" in asked[0]
+    assert w.status.cget("text") == "Settings file problem"
+
+
+def test_settings_file_writes_are_atomic_and_empty_files_are_refused(tmp_path):
+    path = tmp_path / "s.toml"
+    config.save(config.Settings(), path)
+    assert path.exists() and not (tmp_path / "s.toml.tmp").exists()
+    path.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="no focus heights"):
+        config.load(path)

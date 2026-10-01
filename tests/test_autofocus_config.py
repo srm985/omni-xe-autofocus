@@ -466,13 +466,14 @@ def test_probe_is_skipped_once_z_is_known_to_follow():
 
 def test_settings_ranges_are_enforced(tmp_path):
     path = tmp_path / "s.toml"
+    heights = "[focus]\ntarget_a_mm = 181.0\ntarget_b_mm = 222.0\n"
     for bad in (
-        "[focus]\nmax_move_mm = nan\n",
-        "[focus]\nmax_move_mm = 0.0\n",
-        "[focus]\nsamples = 0\n",
-        "[focus]\ntarget_b_mm = -1.0\n",
-        "[z_axis]\npitch_pulse = -3200\n",
-        "[app]\nconfirm_down_above_mm = inf\n",
+        heights + "max_move_mm = nan\n",
+        heights + "max_move_mm = 0.0\n",
+        heights + "samples = 0\n",
+        "[focus]\ntarget_a_mm = 181.0\ntarget_b_mm = -1.0\n",
+        heights + "[z_axis]\npitch_pulse = -3200\n",
+        heights + "[app]\nconfirm_down_above_mm = inf\n",
     ):
         path.write_text(bad)
         with pytest.raises(ValueError, match="out of range"):

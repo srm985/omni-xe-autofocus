@@ -38,8 +38,8 @@ def plan(height_mm: float, settings: Settings) -> FocusPlan:
     if not f.sensor_min_mm <= target <= f.sensor_max_mm:
         raise FocusError(
             f"the focus height for lens {f.lens.upper()} ({target:.1f} mm, offset included) is outside the "
-            f"sensor range {f.sensor_min_mm:g}-{f.sensor_max_mm:g} mm; set it with set-focus or "
-            "fine-tuning, or check focus.offset_mm"
+            f"sensor range {f.sensor_min_mm:g}-{f.sensor_max_mm:g} mm; set it in ⋯ → Settings or with "
+            "fine-tuning (command line: set-focus), or check the focus nudge"
         )
     move = target - height_mm
     if abs(move) < f.deadband_mm:
@@ -115,7 +115,7 @@ def check_motion(move_mm: float, change_mm: float, *, inverted: bool = False, st
     if wrong_way:
         raise MotionError(
             msg + '. If Z moved the opposite way, switch "Z moves the wrong way" '
-            f"{'off' if inverted else 'on'} in the app (... → Settings), or run 'omni-autofocus config set "
+            f"{'off' if inverted else 'on'} in the app (⋯ → Settings), or run 'omni-autofocus config set "
             f"z_axis.invert_direction {str(not inverted).lower()}'"
         )
     raise MotionError(msg + " (stall, end of travel, or wrong z_axis pitch settings)")
