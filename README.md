@@ -66,7 +66,7 @@ choice is remembered). Without LightBurn, ComMarker Studio's lens setting is use
 | Item | What it does |
 |---|---|
 | Check height | Reads the sensor and shows how far Autofocus would move. Moves nothing. |
-| Fine-tune focus (test burns) | Guided test burns to dial in a lens's focus height (see below). |
+| Fine-tune focus (test burns) | Guided test burns, right in the window, to dial in a lens's focus height (see below). |
 | Always on top | Keep the window above LightBurn. |
 | Start with Windows | Start Omni Autofocus when you log in. |
 | Check USB driver | Diagnoses the laser's USB connection and helps install the driver. |
@@ -76,13 +76,21 @@ choice is remembered). Without LightBurn, ComMarker Studio's lens setting is use
 ## Fine-tuning focus
 
 The factory focus heights are usually right (ComMarker also prints them on a card that ships with the
-machine). To check or improve one, use **Fine-tune focus (test burns)** from the ⋯ menu or the Start
-menu. It autofocuses, then steps Z from −4 to +4 mm, always moving up into each position so
-lead-screw slack does not skew the result, and pauses at each step so you can burn the same small
-test design in LightBurn. Use the lowest power that still marks: out-of-focus marks then fade, so the
-edges of the good range are easy to see. At the end it asks for the lowest and highest label that
-still looked good, and offers to save the middle of that range. Only the settings file on your PC
-changes, never the laser.
+machine). To check or improve one, use **⋯ → Fine-tune focus (test burns)**. The window switches to
+a guided mode:
+
+1. Set up a small test design in LightBurn at the lowest power that still marks (out-of-focus marks
+   then fade, so the edges of the good range are easy to see). Press **Start**: it autofocuses, then
+   goes to the first mark, 4 mm below focus.
+2. Burn the design at a fresh spot, label it with the number shown, and press **Next** (or
+   **Ctrl+Alt+F** without leaving LightBurn). Nine marks, −4 to +4 mm. Each one is approached moving
+   up, so lead-screw slack does not skew the result, and each move is checked with the sensor.
+3. Pick the lowest and highest marks that still look good. The middle of that range becomes the new
+   focus height: **Save** it, or keep the current one. Z is back at focus by then.
+
+**Stop and return Z to focus** works at any step. If LightBurn is still burning when you press Next,
+the app says so and waits. Only the settings file on your PC changes, never the laser. (The command
+line has the same procedure as `omni-autofocus focus-ladder`.)
 
 ## USB driver
 
@@ -125,8 +133,8 @@ new `app.hotkey` needs a restart of the app. From the command line: `omni-autofo
 
 ## Command line
 
-The installer also puts `omni-autofocus.exe` next to the app (Start menu: *Fine-tune focus* and
-*Check the laser's USB driver* use it). Double-clicking it runs `focus` in a console window.
+The installer also puts `omni-autofocus.exe` next to the app (the Start-menu entry *Check the
+laser's USB driver* uses it). Double-clicking it runs `focus` in a console window.
 
 ```bash
 omni-autofocus focus                # measure, confirm, move Z, re-check

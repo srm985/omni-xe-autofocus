@@ -247,7 +247,15 @@ class Segmented(tk.Frame):
     """A row of mutually exclusive options, like a toggle group. Click, or Tab to it and press Space."""
 
     def __init__(
-        self, parent, *, options: list[str], value: str, command, palette: Palette, scale: float = 1.0
+        self,
+        parent,
+        *,
+        options: list[str],
+        value: str,
+        command,
+        palette: Palette,
+        scale: float = 1.0,
+        pad: int = 14,
     ):
         super().__init__(parent, bg=palette.border, padx=1, pady=1)
         self.p, self.command = palette, command
@@ -258,7 +266,7 @@ class Segmented(tk.Frame):
             lbl = tk.Label(
                 self,
                 text=option,
-                padx=int(14 * scale),
+                padx=int(pad * scale),
                 pady=int(3 * scale),
                 cursor="hand2",
                 takefocus=1,

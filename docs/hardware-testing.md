@@ -30,7 +30,7 @@ power switch for motion steps.
 | 17 | Hotkey Ctrl+Alt+F while LightBurn has focus | **yes** | autofocus runs, chime, "In focus" or "Already in focus" |
 | 18 | Open LightBurn's framing preview, press Autofocus | no | "Stopped": the laser is busy |
 | 19 | Lens picker A / B / Auto, ⋯ → Check height | no | lens line updates; height shown, nothing moves |
-| 20 | ⋯ → Fine-tune focus, then press the hotkey during the ladder | yes (ladder only) | the app refuses: another window is using the laser |
+| 20 | ⋯ → Fine-tune focus in the app: Start, burn each mark, press Next or Ctrl+Alt+F from LightBurn; try Next while a burn is still running; pick the good range | **yes** | each mark at the shown height; busy laser makes it wait; good range centred on 0 (step 10) |
 
 If step 6 moves the wrong way (sensor change ≈ −1 mm): set `invert_direction = true` in `[z_axis]`
 and repeat 6–7. If the distance is off by a constant factor, check `pitch_pulse`/`screw_pitch`.

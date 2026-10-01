@@ -37,13 +37,15 @@ def test_describe_result():
     assert app.describe_result(no)[:2] == ("Cancelled", "Z did not move.")
 
 
-def test_run_and_cli_commands(tmp_path):
+def test_run_command(tmp_path):
     exe = tmp_path / "OmniAutofocus.exe"
     assert app.run_command(True, str(exe)) == f'"{exe}"'
-    assert app.cli_command(True, str(exe)) is None
-    (tmp_path / "omni-autofocus.exe").write_bytes(b"")
-    assert app.cli_command(True, str(exe)) == [str(tmp_path / "omni-autofocus.exe")]
     assert app.run_command(False, str(tmp_path / "python.exe")).endswith("-m omni_autofocus.app")
+
+
+def test_offset_labels():
+    assert [app.fmt_offset(o) for o in (-4.0, 0.0, 2.0)] == ["−4", "0", "+2"]
+    assert app.parse_offset_label("−3") == -3.0 and app.parse_offset_label("+1") == 1.0
 
 
 def test_hotkey_parsing():
@@ -256,19 +258,6 @@ def test_button_acts_on_key_release_of_its_own_press(window):
         window.button.command = window.autofocus
 
 
-def test_autofocus_is_paused_while_fine_tuning_runs(window):
-    class Running:
-        def poll(self):
-            return None
-
-    window._ladder = Running()
-    try:
-        window.autofocus()
-        assert not window.busy and "Fine-tuning is using the laser" in window.detail.cget("text")
-    finally:
-        window._ladder = None
-
-
 def test_lens_picker_is_locked_while_z_may_move(window, monkeypatch):
     seen = []
     real = window.lens_picker.set_enabled
@@ -287,3 +276,81 @@ def test_focus_ring_shows_on_the_lens_picker(window):
     label.event_generate("<FocusOut>")
     assert label.cget("highlightbackground") == window.palette.bg
     assert callable(ui.focus_ring)
+
+
+# --- fine-tuning in the window ------------------------------------------------------------------------
+
+
+def board_of(window):
+    return window._session.open()[0].__enter__()
+
+
+def start_tune(window):
+    window.open_fine_tune()
+    assert window.tune["stage"] == "intro" and window.status.cget("text") == "Fine-tune focus"
+    window._tune_primary()  # Start: autofocus, then go to the first mark
+    settle(window)
+    assert window.tune["stage"] == "burn" and window.tune["index"] == 0
+
+
+def test_fine_tune_full_run_saves_the_best_focus(window):
+    board = board_of(window)
+    start_tune(window)
+    reference = window.tune["run"].reference
+    assert board.sensor_mm == pytest.approx(reference - 4.0, abs=0.01)
+    assert window.t_big.cget("text") == "−4 mm" and window.status.cget("text") == "Burn mark 1 of 9"
+    window.autofocus()  # the Autofocus view is paused while fine-tuning
+    assert "Finish or stop fine-tuning" in window.detail.cget("text")
+    for _ in range(9):
+        window._tune_primary()
+        settle(window)
+    assert window.tune["stage"] == "result" and window.tune["dev"] is None  # laser released
+    assert board.sensor_mm == pytest.approx(reference, abs=0.01)  # back at focus
+    window.t_low.select("−2", notify=True)
+    window.t_high.select("+3", notify=True)
+    assert "222.0 → 222.5 mm" in window.t_outcome.cget("text")
+    window._tune_save()
+    settle(window)
+    assert window.tune is None and window.status.cget("text") == "Focus saved"
+    assert config.load(window._session.path).focus.target_b_mm == 222.5
+    config.save(config.Settings(app=config.AppSettings(hotkey="", sounds=False)), window._session.path)
+
+
+def test_fine_tune_stop_returns_z_to_focus(window):
+    board = board_of(window)
+    start_tune(window)
+    reference = window.tune["run"].reference
+    window.events.put(("hotkey",))  # the hotkey means Next while fine-tuning
+    settle(window)
+    assert window.tune["index"] == 1
+    window.close()  # refused mid-run
+    assert window.root.winfo_exists() and "Stop fine-tuning first" in window.detail.cget("text")
+    window._tune_secondary()  # Stop and return Z to focus
+    settle(window)
+    assert window.tune is None and board.sensor_mm == pytest.approx(reference, abs=0.01)
+    assert "back at the focus height" in window.detail.cget("text")
+
+
+def test_fine_tune_waits_while_lightburn_is_busy(window, monkeypatch):
+    from omni_autofocus.controller import Controller, ControllerBusyError
+
+    start_tune(window)
+    real_move = Controller.move_axis
+    state = {"busy": True}
+
+    def busy_once(self, params, pulses, **kw):
+        if state["busy"]:
+            state["busy"] = False
+            raise ControllerBusyError("busy")
+        return real_move(self, params, pulses, **kw)
+
+    monkeypatch.setattr(Controller, "move_axis", busy_once)
+    window._tune_primary()
+    settle(window)
+    assert window.tune["index"] == 0 and window.status.cget("text") == "Laser busy"
+    window._tune_primary()
+    settle(window)
+    assert window.tune["index"] == 1
+    window._tune_secondary()
+    settle(window)
+    assert window.tune is None

@@ -8,10 +8,9 @@ import logging
 import sys
 import tempfile
 import time
-from dataclasses import replace
 from pathlib import Path
 
-from . import __version__, autofocus, config, session
+from . import __version__, autofocus, config, ladder, session
 from .controller import Controller, ControllerBusyError, ControllerError
 
 log = logging.getLogger("omni_autofocus")
@@ -235,42 +234,15 @@ def _autofocus(ctl: Controller, s: config.Settings, *, passes: int, dry_run: boo
     return 0
 
 
-def _parse_offsets(text: str) -> list[float]:
-    try:
-        offsets = [float(x) for x in text.split(",") if x.strip()]
-    except ValueError as e:
-        raise ValueError(f"bad --offsets {text!r}: use comma-separated mm values like 0,-1,1") from e
-    if not offsets:
-        raise ValueError("--offsets is empty")
-    return offsets
-
-
-BACKLASH_PRETRAVEL_MM = 1.0
-
-
-def _ladder_offsets(args) -> list[float]:
-    if args.offsets:
-        return _parse_offsets(args.offsets)
-    if args.step <= 0 or args.range <= 0:
-        raise ValueError("--range and --step must be positive")
-    n = int(round(args.range / args.step))
-    return [round(i * args.step, 6) for i in range(-n, n + 1)]
-
-
 def cmd_focus_ladder(args) -> int:
-    """Autofocus, step Z through offsets for test burns, then optionally save the dialled-in focus.
-
-    Each mark is approached from below (one-directional travel) so lead-screw backlash does not skew
-    the comparison. The user reports the lowest and highest marks that still look good; the midpoint
-    of that range becomes the new focus height for the current lens.
-    """
+    """Autofocus, step Z through offsets for test burns, then optionally save the dialled-in focus
+    (see :mod:`omni_autofocus.ladder`)."""
     _check_other_software(args.force)
     s = _settings_with_lens(args)
-    offsets = _ladder_offsets(args)
-    params = s.z_axis.axis_params()
-    ascending = offsets == sorted(offsets)
-    reach = max(abs(o) for o in offsets) + (BACKLASH_PRETRAVEL_MM if ascending else 0)
-    if reach > s.focus.max_move_mm:
+    offsets = (
+        ladder.parse_offsets(args.offsets) if args.offsets else ladder.default_offsets(args.range, args.step)
+    )
+    if ladder.reach_mm(offsets) > s.focus.max_move_mm:
         print(f"Offsets exceed the safety limit of {s.focus.max_move_mm:g} mm.")
         return 2
     print("Focus ladder: autofocus, then Z offsets " + ", ".join(f"{o:+g}" for o in offsets) + " mm.")
@@ -284,19 +256,13 @@ def cmd_focus_ladder(args) -> int:
         code = _autofocus(ctl, s, passes=2, dry_run=False, yes=args.yes)
         if code:
             return code
-        reference = ctl.read_height_median(s.focus.samples)
+        run = ladder.Ladder(ctl, s, offsets)
+        reference = run.measure_reference()
         print(f"Reference (offset 0): sensor reading {reference:.3f} mm")
-        current = 0.0
         burned: list[float] = []
         try:
-            if ascending and offsets[0] < 0:  # take up backlash: arrive at every mark moving upwards
-                _move_when_free(ctl, params, offsets[0] - BACKLASH_PRETRAVEL_MM)
-                current = offsets[0] - BACKLASH_PRETRAVEL_MM
             for offset in offsets:
-                step = offset - current
-                if step:
-                    _move_when_free(ctl, params, step)
-                    current = offset
+                _when_free(lambda o=offset: run.go_to(o))
                 answer = _prompt(
                     f"\nZ is at {offset:+g} mm. Burn the mark labelled '{offset:+g}', "
                     "then press Enter (q + Enter to stop): "
@@ -305,12 +271,12 @@ def cmd_focus_ladder(args) -> int:
                     break
                 burned.append(offset)
         finally:
-            if current:
-                print(f"Returning Z to the autofocus height ({-current:+g} mm).")
+            if run.current:
+                print(f"Returning Z to the autofocus height ({-run.current:+g} mm).")
                 try:
-                    _move_when_free(ctl, params, -current)
+                    _when_free(run.return_to_focus)
                 except _LeftInPlace:
-                    print(f"Z left at {current:+g} mm from focus; run 'omni-autofocus focus' to return.")
+                    print(f"Z left at {run.current:+g} mm from focus; run 'omni-autofocus focus' to return.")
     if len(burned) < 2:
         return 0
     return _dial_in(args, s, burned, reference)
@@ -320,11 +286,11 @@ class _LeftInPlace(Exception):
     """The user chose not to retry a move the controller refused because it was busy."""
 
 
-def _move_when_free(ctl: Controller, params, mm: float) -> None:
-    """Move Z; if the controller is busy (job or framing preview running), ask the user and retry."""
+def _when_free(move) -> None:
+    """Run a Z move; if the controller is busy (job or framing preview running), ask and retry."""
     while True:
         try:
-            ctl.move_axis(params, params.mm_to_pulses(mm))
+            move()
             return
         except ControllerBusyError:
             answer = _prompt(
@@ -366,10 +332,8 @@ def _dial_in(args, s: config.Settings, burned: list[float], reference: float) ->
         print(
             "Note: the good range reaches the end of the ladder; consider a wider --range to find its edge."
         )
-    centre = (lo + hi) / 2
+    centre, new_target = ladder.best_focus(reference, lo, hi)
     lens_key = s.focus.lens.lower()
-    # The sensor reading at best focus. focus.offset_mm stays a separate nudge on top of it.
-    new_target = round(reference + centre, 1)
     old_target = s.focus.target_b_mm if lens_key == "b" else s.focus.target_a_mm
     print(f"Good range {lo:+g} .. {hi:+g} mm -> centre {centre:+g} mm from the autofocus height.")
     if abs(new_target - old_target) < 0.1:
@@ -386,10 +350,7 @@ def _save_focus_target(args, lens_key: str, old: float, new: float, *, yes: bool
     if not yes and _prompt(question).strip().lower() not in ("y", "yes"):
         print("Not saved.")
         return False
-    # Start from the file itself so one-off overrides (e.g. --lens) are not persisted.
-    stored = config.load(path) if path.exists() else config.Settings()
-    stored = replace(stored, focus=replace(stored.focus, **{f"target_{lens_key}_mm": new}))
-    config.save(stored, path)
+    stored = ladder.save_focus_target(path, lens_key, new)
     print(f"Saved. Autofocus now targets {new:.1f} mm for lens {lens_key.upper()}.")
     if stored.focus.offset_mm:
         print(f"(focus.offset_mm = {stored.focus.offset_mm:+g} mm is still added on top.)")

@@ -14,7 +14,6 @@ import json
 import logging
 import os
 import queue
-import subprocess
 import sys
 import tempfile
 import threading
@@ -22,7 +21,7 @@ import time
 from ctypes import wintypes as wt
 from pathlib import Path
 
-from . import __version__, autofocus, config, lens, session
+from . import __version__, autofocus, config, ladder, lens, session
 from .controller import ControllerBusyError, ControllerError, SensorNoTargetError
 
 log = logging.getLogger(__name__)
@@ -111,6 +110,18 @@ def lens_summary(choice: str, why: str, target_mm: float | None) -> str:
     return " · ".join(part for part in (head, source, focus) if part)
 
 
+TUNE_OFFSETS = tuple(ladder.default_offsets())  # -4 .. +4 mm in 1 mm steps
+
+
+def fmt_offset(mm: float) -> str:
+    """'+2', '0', '−3' (a real minus sign)."""
+    return "0" if mm == 0 else f"{mm:+g}".replace("-", "−")
+
+
+def parse_offset_label(label: str) -> float:
+    return float(label.replace("−", "-"))
+
+
 def window_title(simulate: bool) -> str:
     return f"{APP_NAME} (simulation)" if simulate else APP_NAME
 
@@ -121,14 +132,6 @@ def run_command(frozen: bool, executable: str) -> str:
         return f'"{executable}"'
     pythonw = Path(executable).with_name("pythonw.exe")
     return f'"{pythonw if pythonw.exists() else executable}" -m omni_autofocus.app'
-
-
-def cli_command(frozen: bool, executable: str) -> list[str] | None:
-    """How to start the command-line tool (installed next to the app's .exe)."""
-    if not frozen:
-        return [executable.replace("pythonw.exe", "python.exe"), "-m", "omni_autofocus"]
-    cli = Path(executable).with_name("omni-autofocus.exe")
-    return [str(cli)] if cli.exists() else None
 
 
 # --- Windows integration --------------------------------------------------------------------------------
@@ -291,7 +294,7 @@ class App:
         self.motion_fault = bool(self.state.get("motion_fault"))
         self._verified_axis = None  # z_axis settings Z was last seen to follow
         self._quiet_until = 0.0
-        self._ladder: subprocess.Popen | None = None
+        self.tune: dict | None = None  # fine-tuning state while its view is open
 
         self.root = tk.Tk()
         self.title = window_title(simulate)
@@ -333,16 +336,19 @@ class App:
         )  # fmt: skip
         self.detail.pack(fill="x", pady=(int(4 * sc), 0))
 
+        self.main_part = main = tk.Frame(body, bg=p.bg)  # Autofocus view
+        main.pack(fill="x")
+        self.tune_part = tk.Frame(body, bg=p.bg)  # fine-tuning view, swapped in by open_fine_tune
         self.button = ui.RoundButton(
-            body, text="Autofocus", command=self.autofocus, palette=p, scale=sc, width=self.WIDTH, height=46,
+            main, text="Autofocus", command=self.autofocus, palette=p, scale=sc, width=self.WIDTH, height=46,
             guard=self._key_allowed,
         )  # fmt: skip
         self.button.pack(pady=(int(12 * sc), int(6 * sc)))
-        self.hint = tk.Label(body, text=" ", bg=p.bg, fg=p.muted, font=(font, 9))
+        self.hint = tk.Label(main, text=" ", bg=p.bg, fg=p.muted, font=(font, 9))
         self.hint.pack()
 
-        tk.Frame(body, bg=p.border, height=1).pack(fill="x", pady=(int(14 * sc), int(12 * sc)))
-        row = tk.Frame(body, bg=p.bg)
+        tk.Frame(main, bg=p.border, height=1).pack(fill="x", pady=(int(14 * sc), int(12 * sc)))
+        row = tk.Frame(main, bg=p.bg)
         row.pack(fill="x")
         tk.Label(row, text="Lens", bg=p.bg, fg=p.text, font=(font, 9)).pack(side="left")
         self.lens_picker = ui.Segmented(
@@ -354,8 +360,13 @@ class App:
             scale=sc,
         )
         self.lens_picker.pack(side="right")
-        self.lens_info = tk.Label(body, text=" ", bg=p.bg, fg=p.muted, font=(font, 8), anchor="w")
+        self.lens_info = tk.Label(main, text=" ", bg=p.bg, fg=p.muted, font=(font, 8), anchor="w")
         self.lens_info.pack(fill="x", pady=(int(8 * sc), 0))
+        self._build_tune(self.tune_part, p, sc, wrap, font)
+        # Same width in both views, so the window does not jump when fine-tuning opens or closes.
+        self.root.update_idletasks()
+        inner = max(self.main_part.winfo_reqwidth(), self.tune_part.winfo_reqwidth())
+        self.root.minsize(inner + 2 * int(20 * sc), 0)
 
         self.on_top = tk.BooleanVar(value=self.state.get("on_top", True) is not False)
         self.autostart = tk.BooleanVar(value=False)
@@ -363,7 +374,7 @@ class App:
         menu.configure(activebackground=p.accent, activeforeground=p.on_accent, selectcolor=p.text)
         menu.configure(disabledforeground=p.muted)
         menu.add_command(label="Check height", command=self.check_height)
-        menu.add_command(label="Fine-tune focus (test burns)…", command=self.open_ladder)
+        menu.add_command(label="Fine-tune focus (test burns)…", command=self.open_fine_tune)
         menu.add_separator()
         menu.add_checkbutton(label="Always on top", variable=self.on_top, command=self._toggle_on_top)
         menu.add_checkbutton(
@@ -396,12 +407,17 @@ class App:
         self.root.mainloop()
 
     def close(self) -> None:
+        if self.tune is not None and self.tune["stage"] == "burn":
+            self._set_detail("Stop fine-tuning first, so Z can return to the focus height.")
+            return
         if self.moving:  # quitting would abandon a move half-way; the installer's close request waits
             self._set_status("Still moving", WARN)
             self._set_detail("Wait until Z has stopped, then close the window.")
             return
         if self.hotkey:
             self.hotkey.stop()
+        if self.tune is not None:
+            self._close_tune()
         _save_state(
             {
                 "x": self.root.winfo_x(),
@@ -456,14 +472,12 @@ class App:
 
     # -- worker plumbing ------------------------------------------------------------------------------
 
-    def _start(self, job, *args, moves: bool = False) -> None:
+    def _start(self, job, *args, moves: bool = False, tune: bool = False) -> None:
         if self.busy:
             self._set_detail("Still working on the last request…")
             return
-        if moves and self._ladder_running():
-            self._set_detail("Fine-tuning is using the laser. Close its window first.")
-            if self.app_settings.sounds:
-                _beep(False)  # audible when the hotkey was pressed from LightBurn
+        if self.tune is not None and not tune:
+            self._set_detail("Finish or stop fine-tuning first.")
             return
         self.busy = True
         self.moving = moves
@@ -530,7 +544,25 @@ class App:
             if self.app_settings.sounds:
                 _beep(event[1])
         elif kind == "hotkey":
-            self.autofocus()
+            if self.tune is not None:
+                self._tune_primary()  # while fine-tuning the hotkey means Start / Next
+            else:
+                self.autofocus()
+        elif kind == "tune_started" and self.tune is not None:
+            _, dev, run, settings = event
+            self.tune.update(dev=dev, run=run, settings=settings, stage="burn", index=0)
+            self._tune_render()
+        elif kind == "tune_step" and self.tune is not None:
+            self.tune["index"] = event[1]
+            self._tune_render()
+        elif kind == "tune_result" and self.tune is not None:
+            dev, self.tune["dev"] = self.tune["dev"], None  # Z is back at focus: release the laser
+            dev.__exit__(None, None, None)
+            self.tune["stage"] = "result"
+            self._tune_render()
+        elif kind == "tune_end":
+            if self.tune is not None:
+                self._close_tune()
         elif kind == "motion":  # latch a motion fault until a move is seen to follow again
             ok, axis = event[1], event[2] if len(event) > 2 else None
             self.motion_fault = not ok
@@ -539,11 +571,14 @@ class App:
         elif kind == "idle":
             self.busy = False
             self.moving = False
-            self.button.set_enabled(not self._ladder_running())
+            self.button.set_enabled(True)
             self.lens_picker.set_enabled(True)
             self._set_dot(self._tone)
-            if self.root.focus_get() is None or self.root.focus_get() == self.button:
-                self.button.focus_set()
+            target = (
+                self.t_button if self.tune is not None and self.tune["stage"] != "result" else self.button
+            )
+            if self.root.focus_get() in (None, self.button, self.t_button):
+                target.focus_set()
             if self._lens_dirty:  # the lens was changed while busy: refresh the lens line now
                 self._lens_dirty = False
                 self._start(self._prepare_quietly)
@@ -641,28 +676,15 @@ class App:
         self._post("detail", note or "Reading the height sensor…")
         s = self._settings()
 
-        def on_plan(i: int, p: autofocus.FocusPlan) -> None:
-            self._post("detail", f"Height {p.height_mm:.1f} mm · focus {p.target_mm:.1f} mm")
-
-        fault = self.motion_fault
-
-        def confirm(p: autofocus.FocusPlan) -> bool:
-            if needs_confirmation(p, s.app, motion_fault=fault):
-                self._post("status", "Confirm the move", BUSY)
-                towards = ", towards the work" if p.move_mm < 0 else ""
-                warning = "Last time Z did not move as expected.\n\n" if fault else ""
-                if not self._ask(
-                    f"{warning}Move the head {updown(p.move_mm)}{towards}?\n\n"
-                    f"Height {p.height_mm:.1f} mm, focus at {p.target_mm:.1f} mm."
-                ):
-                    return False
-            self._post("status", f"Moving {updown(p.move_mm)}…", BUSY)
-            return True
-
         dev, ctl = self._session.open()
         with dev:
             result = autofocus.run(
-                ctl, s, passes=2, confirm=confirm, on_plan=on_plan, probe=s.z_axis != self._verified_axis
+                ctl,
+                s,
+                passes=2,
+                confirm=self._confirmer(s),
+                on_plan=self._on_plan,
+                probe=s.z_axis != self._verified_axis,
             )
         if result.verified:
             self._post("motion", True, s.z_axis)
@@ -714,46 +736,292 @@ class App:
             self._set_status("Could not change that", ERR)
             self._set_detail(f"The startup setting could not be changed: {e}")
 
-    def open_ladder(self) -> None:
-        if self.busy:
+    # -- fine-tuning with test burns (UI thread unless noted) --------------------------------------------
+
+    def _build_tune(self, parent, p, sc: float, wrap: int, font: str) -> None:
+        import tkinter as tk
+
+        from . import ui
+
+        self.t_steps = tk.Frame(parent, bg=p.bg)  # the Start/Next view; swapped for t_result at the end
+        self.t_steps.pack(fill="x")
+        steps = self.t_steps
+        self.t_big = tk.Label(steps, text=" ", bg=p.bg, fg=p.text, font=(font, 26, "bold"))
+        self.t_big.pack(pady=(int(10 * sc), 0))
+        self.t_sub = tk.Label(steps, text=" ", bg=p.bg, fg=p.muted, font=(font, 9), wraplength=wrap)
+        self.t_sub.pack()
+        self._dot_size, self._dot_gap = int(8 * sc), int(14 * sc)
+        self.t_dots = tk.Canvas(steps, width=wrap, height=int(14 * sc), bg=p.bg, highlightthickness=0, bd=0)
+        self.t_dots.pack(pady=(int(8 * sc), 0))
+        self.t_button = ui.RoundButton(
+            steps, text="Start", command=self._tune_primary, palette=p, scale=sc, width=self.WIDTH, height=46,
+            guard=self._key_allowed,
+        )  # fmt: skip
+        self.t_button.pack(pady=(int(12 * sc), int(6 * sc)))
+        self.t_hint = tk.Label(steps, text=" ", bg=p.bg, fg=p.muted, font=(font, 9))
+        self.t_hint.pack()
+
+        self.t_result = tk.Frame(parent, bg=p.bg)  # shown on the result step
+        labels = [fmt_offset(o) for o in TUNE_OFFSETS]
+        self.t_low = ui.Segmented(
+            self.t_result, options=labels, value=labels[0], command=lambda _: self._tune_outcome(),
+            palette=p, scale=sc, pad=5,
+        )  # fmt: skip
+        self.t_high = ui.Segmented(
+            self.t_result, options=labels, value=labels[-1], command=lambda _: self._tune_outcome(),
+            palette=p, scale=sc, pad=5,
+        )  # fmt: skip
+        for text, picker in (("Lowest mark that still looks good", self.t_low), ("Highest", self.t_high)):
+            tk.Label(self.t_result, text=text, bg=p.bg, fg=p.text, font=(font, 9), anchor="w").pack(fill="x")
+            picker.pack(anchor="w", pady=(int(2 * sc), int(8 * sc)))
+        self.t_outcome = tk.Label(
+            self.t_result, text=" ", bg=p.bg, fg=p.text, font=(font, 9, "bold"), anchor="w", justify="left",
+            wraplength=wrap,
+        )  # fmt: skip
+        self.t_outcome.pack(fill="x")
+        self.t_save = ui.RoundButton(
+            self.t_result, text="Save", command=self._tune_save, palette=p, scale=sc, width=self.WIDTH,
+            height=40,
+            guard=self._key_allowed,
+        )  # fmt: skip
+        self.t_save.pack(pady=(int(10 * sc), int(4 * sc)))
+
+        self.t_stop = tk.Label(
+            parent, text=" ", bg=p.bg, fg=p.accent, font=(font, 9, "underline"), cursor="hand2"
+        )
+        self.t_stop.configure(takefocus=1, highlightthickness=2, highlightbackground=p.bg)
+        ui.focus_ring(self.t_stop, p.text, lambda: p.bg)
+        for seq in ("<Button-1>", "<space>", "<Return>"):
+            self.t_stop.bind(seq, lambda e: self._tune_secondary())
+        self.t_stop.pack(pady=(int(6 * sc), 0))
+
+    def open_fine_tune(self) -> None:
+        if self.busy or self.tune is not None:
             self._set_detail("Wait for the current task to finish, then open fine-tuning.")
             return
-        if self._ladder is not None and self._ladder.poll() is None:
-            self._set_detail("Fine-tuning is already open in its own window.")
+        self.tune = {"stage": "intro", "index": 0, "burned": [], "dev": None, "run": None, "settings": None}
+        self.main_part.pack_forget()
+        self.tune_part.pack(fill="x")
+        self._tune_render()
+
+    def _close_tune(self) -> None:
+        """Back to the Autofocus view; releases the laser if fine-tuning still holds it."""
+        tune, self.tune = self.tune, None
+        if tune and tune["dev"] is not None:
+            try:
+                tune["dev"].__exit__(None, None, None)
+            except Exception:  # noqa: BLE001 - releasing must not fail the window
+                log.debug("closing the laser failed", exc_info=True)
+        self.tune_part.pack_forget()
+        self.main_part.pack(fill="x")
+        self.button.set_enabled(not self.busy)
+        self.button.focus_set()
+
+    def _tune_render(self) -> None:
+        t, n = self.tune, len(TUNE_OFFSETS)
+        if t is None:
             return
-        cmd = cli_command(getattr(sys, "frozen", False), sys.executable)
-        if cmd is None:
-            self._set_status("Cannot fine-tune", ERR)
-            self._set_detail("omni-autofocus.exe was not found next to the app. Reinstall Omni Autofocus.")
+        stage = t["stage"]
+        hotkey = self.hint.cget("text").startswith("or press")
+        if stage == "result":
+            self.t_steps.pack_forget()
+            self.t_result.pack(fill="x", before=self.t_stop)
+        else:
+            self.t_result.pack_forget()
+            self.t_steps.pack(fill="x", before=self.t_stop)
+        if stage == "intro":
+            self._set_status("Fine-tune focus", INFO)
+            self._set_detail(
+                f"{n} test marks around focus. In LightBurn, set up a small design at low power."
+            )
+            self.t_big.configure(text=f"{fmt_offset(TUNE_OFFSETS[0])} … {fmt_offset(TUNE_OFFSETS[-1])} mm")
+            self.t_sub.configure(text="Autofocus first, then one mark per height")
+            self.t_button.set_text("Start")
+            self.t_stop.configure(text="Cancel")
+        elif stage == "burn":
+            i = t["index"]
+            self._set_status(f"Burn mark {i + 1} of {n}", INFO)
+            self._set_detail("Burn the design at a fresh spot in LightBurn, then press Next.")
+            self.t_big.configure(text=f"{fmt_offset(TUNE_OFFSETS[i])} mm")
+            self.t_sub.configure(text="from the autofocus height · label the mark with it")
+            self.t_button.set_text("Next" if i + 1 < n else "Done")
+            self.t_stop.configure(text="Stop and return Z to focus")
+        elif stage == "result":
+            self._set_status("Pick the best marks", INFO)
+            self._set_detail("Compare the marks with a loupe or a zoomed photo.")
+            self._tune_outcome()
+        self.t_hint.configure(text="or press Ctrl + Alt + F" if hotkey and stage != "result" else " ")
+        self._draw_dots()
+
+    def _draw_dots(self) -> None:
+        c, p, n = self.t_dots, self.palette, len(TUNE_OFFSETS)
+        c.delete("all")
+        t = self.tune or {}
+        done, current = len(t.get("burned", [])), t.get("index", -1) if t.get("stage") == "burn" else -1
+        d, gap = self._dot_size, self._dot_gap
+        x0 = (int(c.cget("width")) - (n * d + (n - 1) * (gap - d))) / 2
+        for i in range(n):
+            x = x0 + i * gap
+            fill = p.accent if i < done else p.bg
+            outline = p.accent if i <= max(done - 1, current) else p.border
+            c.create_oval(x, 2, x + d, 2 + d, fill=fill, outline=outline, width=2 if i == current else 1)
+
+    def _tune_primary(self) -> None:
+        """Start, or Next after a mark has been burned (also the hotkey while fine-tuning)."""
+        t = self.tune
+        if t is None or self.busy:
             return
-        args = ["--simulate"] if self.simulate else []
-        if self.config_path:
-            args += ["--config", str(self.config_path)]
-        lens = LENS_CHOICES.get(self.lens_choice)
-        if lens:
-            args += ["--lens", lens]
-        self._ladder = subprocess.Popen(
-            [*cmd, *args, "focus-ladder"], creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+        if t["stage"] == "intro":
+            self._start(self._tune_begin, moves=True, tune=True)
+        elif t["stage"] == "burn":
+            if t["index"] not in t["burned"]:
+                t["burned"].append(t["index"])
+            self._start(self._tune_advance, t["run"], t["index"], moves=True, tune=True)
+
+    def _tune_secondary(self) -> None:
+        """Cancel / Stop and return / Keep, depending on the step."""
+        t = self.tune
+        if t is None or self.busy:
+            return
+        if t["stage"] == "burn" and t["run"] is not None:
+            self._start(self._tune_stop, t["run"], moves=True, tune=True)
+            return
+        self._close_tune()
+        self._set_status("Ready", INFO)
+        self._set_detail(
+            "Focus height unchanged." if t["stage"] == "result" else "Put the work piece under the head."
         )
-        self._set_status("Fine-tuning", BUSY)
-        self._set_detail("Follow the steps in the new window. Autofocus is paused until it is closed.")
-        self.button.set_enabled(False)
-        self.root.after(1000, self._watch_ladder)
 
-    def _ladder_running(self) -> bool:
-        return self._ladder is not None and self._ladder.poll() is None
+    def _tune_outcome(self) -> tuple[float, float] | None:
+        t = self.tune
+        if t is None or t["settings"] is None or t["run"] is None:
+            return None
+        lo = parse_offset_label(self.t_low.value)
+        hi = parse_offset_label(self.t_high.value)
+        centre, new = ladder.best_focus(t["run"].reference, lo, hi)
+        f = t["settings"].focus
+        old = f.target_b_mm if f.lens.lower() == "b" else f.target_a_mm
+        ok = f.sensor_min_mm <= new <= f.sensor_max_mm
+        edge = (
+            " The good range reaches the end of the ladder."
+            if min(lo, hi) == TUNE_OFFSETS[0] or max(lo, hi) == TUNE_OFFSETS[-1]
+            else ""
+        )
+        if not ok:
+            text = f"{new:.1f} mm is outside the sensor range; check the marks again."
+        elif abs(new - old) < 0.1:
+            text = f"Best focus is where autofocus already goes ({old:.1f} mm).{edge}"
+        else:
+            heights = f"lens {f.lens.upper()} focus height {old:.1f} → {new:.1f} mm"
+            text = f"Best focus {centre:+.1f} mm → {heights}.{edge}"
+        self.t_outcome.configure(text=text)
+        change = ok and abs(new - old) >= 0.1
+        self.t_save.set_text(f"Save {new:.1f} mm" if change else "Nothing to save")
+        self.t_save.set_enabled(change)
+        self.t_stop.configure(text="Keep the current focus height" if change else "Done")
+        return old, new
 
-    def _watch_ladder(self) -> None:
-        if self._ladder is not None and self._ladder.poll() is None:
-            self.root.after(1000, self._watch_ladder)
+    def _tune_save(self) -> None:
+        t, outcome = self.tune, self._tune_outcome()
+        if t is None or outcome is None:
             return
-        self._ladder = None
-        if self.status.cget("text") == "Fine-tuning":  # keep anything shown since (an error, a height)
-            self._set_status("Ready", INFO)
-            self._set_detail("Fine-tuning finished. Put the work piece under the head.")
-        if not self.busy:
-            self.button.set_enabled(True)
-            self._start(self._prepare_quietly)  # pick up a newly saved focus height
+        old, new = outcome
+        lens_key = t["settings"].focus.lens.lower()
+        try:
+            ladder.save_focus_target(self._session.path, lens_key, new)
+        except (OSError, ValueError) as e:
+            self._set_status("Not saved", ERR)
+            self._set_detail(str(e))
+            return
+        self._close_tune()
+        self._set_status("Focus saved", OK)
+        self._set_detail(f"Lens {lens_key.upper()} focus height {old:.1f} → {new:.1f} mm.")
+        self._start(self._prepare_quietly)
+
+    # worker thread ----------------------------------------------------------------------------------
+
+    def _tune_begin(self) -> None:
+        self._session.check_other_software()
+        self._post("status", "Autofocus first…", BUSY)
+        self._post("detail", "Reading the height sensor…")
+        s = self._settings()
+        dev, ctl = self._session.open()  # held until fine-tuning ends: no other program can move Z
+        try:
+            result = autofocus.run(
+                ctl, s, passes=2, confirm=self._confirmer(s), on_plan=self._on_plan,
+                probe=s.z_axis != self._verified_axis,
+            )  # fmt: skip
+            if result.verified:
+                self._post("motion", True, s.z_axis)
+            if result.outcome is autofocus.Outcome.CANCELLED:
+                raise Cancelled
+            if result.outcome is not autofocus.Outcome.IN_FOCUS:
+                raise autofocus.FocusError(describe_result(result)[1].rstrip("."))
+            run = ladder.Ladder(ctl, s, list(TUNE_OFFSETS))
+            run.measure_reference()
+            self._post("status", f"Moving to {fmt_offset(TUNE_OFFSETS[0])} mm…", BUSY)
+            run.go_to(TUNE_OFFSETS[0])
+        except BaseException:
+            dev.__exit__(None, None, None)
+            self._post("tune_end")
+            raise
+        self._post("tune_started", dev, run, s)
+
+    def _tune_advance(self, run: ladder.Ladder, index: int) -> None:
+        try:
+            if index + 1 < len(run.offsets):
+                self._post("status", f"Moving to {fmt_offset(run.offsets[index + 1])} mm…", BUSY)
+                run.go_to(run.offsets[index + 1])
+                self._post("tune_step", index + 1)
+            else:
+                self._post("status", "Returning to focus…", BUSY)
+                run.return_to_focus()
+                self._post("tune_result")
+        except ControllerBusyError:
+            self._post("status", "Laser busy", WARN)
+            self._post(
+                "detail", "LightBurn is still using the laser. When the mark is done, press Next again."
+            )
+        except BaseException:
+            self._post("tune_end")
+            raise
+
+    def _tune_stop(self, run: ladder.Ladder) -> None:
+        try:
+            self._post("status", "Returning to focus…", BUSY)
+            run.return_to_focus()
+        except ControllerBusyError:
+            self._post("status", "Laser busy", WARN)
+            self._post("detail", "LightBurn is still using the laser. Stop it, then press Stop again.")
+            return
+        except BaseException:
+            self._post("tune_end")
+            raise
+        self._post("tune_end")
+        self._post("status", "Ready", INFO)
+        self._post("detail", "Fine-tuning stopped. Z is back at the focus height.")
+
+    def _confirmer(self, s: config.Settings):
+        """The app's confirmation rule for a focus run (worker thread)."""
+        fault = self.motion_fault
+
+        def confirm(p: autofocus.FocusPlan) -> bool:
+            if needs_confirmation(p, s.app, motion_fault=fault):
+                self._post("status", "Confirm the move", BUSY)
+                towards = ", towards the work" if p.move_mm < 0 else ""
+                warning = "Last time Z did not move as expected.\n\n" if fault else ""
+                if not self._ask(
+                    f"{warning}Move the head {updown(p.move_mm)}{towards}?\n\n"
+                    f"Height {p.height_mm:.1f} mm, focus at {p.target_mm:.1f} mm."
+                ):
+                    return False
+            self._post("status", f"Moving {updown(p.move_mm)}…", BUSY)
+            return True
+
+        return confirm
+
+    def _on_plan(self, i: int, p: autofocus.FocusPlan) -> None:
+        self._post("detail", f"Height {p.height_mm:.1f} mm · focus {p.target_mm:.1f} mm")
 
     def check_driver(self) -> None:
         from . import driver

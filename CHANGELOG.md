@@ -8,8 +8,10 @@ First public release. Verified on a ComMarker Omni Xe 6W (BSL controller, USB `0
 
 - one-click autofocus in a small always-on-top window next to LightBurn, plus a global hotkey
   (Ctrl+Alt+F, configurable as `app.hotkey`); light and dark theme following Windows
-- lens picker (Auto / A / B; Auto follows the LightBurn profile), height check, fine-tuning, USB
-  driver check, start with Windows, remembers its position
+- lens picker (Auto / A / B; Auto follows the LightBurn profile), height check, USB driver check,
+  start with Windows, remembers its position
+- fine-tuning with test burns in the window: big step display, Next button or the hotkey from
+  LightBurn, pick the best marks, save; Stop returns Z to focus at any step
 - moving up never asks; a move down of more than 10 mm (`app.confirm_down_above_mm`) asks first, with
   "No" as the default
 - first use shows the focus heights read from the laser and saves them only after you accept
