@@ -77,7 +77,10 @@ An empty `AAC1` just collects received bytes.
 
 Height read sequence (ComMarker): `AAC1 + 01 04 00 00 00 02 71 CB` (Modbus RTU, slave 1, read input
 registers 0–1), wait 200 ms, `AAC1` with no data → Modbus reply
-`01 04 04 b0 b1 b2 b3 crc crc`; height mm = BE u32(b0..b3) / 1000.
+`01 04 04 b0 b1 b2 b3 crc crc`; height mm = BE u32(b0..b3) / 1000. A value of `7F FF FF FF`
+means the sensor has no valid measurement (observed on hardware when no surface was in range).
+Hardware-confirmed: the first AAC1 reply carries 0 received bytes; the collect reply carries the
+9-byte Modbus frame.
 
 ### `0x03A0` / `0x03A1` axis move (list command, axes 0/1 or 2/3)
 24 data bytes, two slots (slot = axis id mod 2):

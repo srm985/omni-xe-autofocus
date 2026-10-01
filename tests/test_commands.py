@@ -21,6 +21,12 @@ def test_parse_height_reply():
     assert commands.parse_height_reply(reply) == pytest.approx(222.0)
 
 
+def test_parse_height_reply_no_target_hardware_vector():
+    # Captured from the real sensor (2026-10-01) with nothing in range; CRC D3 D0 is the sensor's own.
+    with pytest.raises(commands.SensorNoTarget):
+        commands.parse_height_reply(bytes.fromhex("01 04 04 7f ff ff ff d3 d0"))
+
+
 def test_parse_height_reply_rejects_bad_crc():
     reply = bytearray(modbus.with_crc(bytes.fromhex("01 04 04 00 03 63 30")))
     reply[-1] ^= 1

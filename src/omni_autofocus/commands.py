@@ -63,12 +63,21 @@ SENSOR_SLAVE = 1
 HEIGHT_REQUEST = modbus.read_input_registers(SENSOR_SLAVE, 0, 2)  # 01 04 00 00 00 02 71 CB
 
 
+SENSOR_NO_TARGET = 0x7FFFFFFF  # observed on hardware when nothing is within the measuring range
+
+
+class SensorNoTarget(Exception):
+    """The sensor answered correctly but reported that it has no valid measurement."""
+
+
 def parse_height_reply(frame: bytes) -> float:
     """Distance in mm from the sensor's Modbus reply (two registers, big-endian micrometres)."""
     regs = modbus.parse_read_registers(frame, slave=SENSOR_SLAVE)
     if len(regs) != 4:
         raise modbus.ModbusError(f"expected 4 register bytes, got {len(regs)}")
     (micrometres,) = struct.unpack(">I", regs)
+    if micrometres == SENSOR_NO_TARGET:
+        raise SensorNoTarget(f"sensor reports no target ({regs.hex(' ')})")
     return micrometres / 1000.0
 
 

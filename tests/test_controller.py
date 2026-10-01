@@ -86,6 +86,15 @@ def test_corrupt_frame_is_skipped():
     assert ctl.state().idle
 
 
+def test_no_target_is_reported_without_retrying():
+    from omni_autofocus.controller import SensorNoTargetError
+
+    board, ctl = make(sensor_mm=0x7FFFFFFF / 1000)
+    with pytest.raises(SensorNoTargetError, match="no surface"):
+        ctl.read_height()
+    assert len(board.sent_frames) == 2  # one request + one collect, no retries
+
+
 def test_height_read_retries_until_valid():
     class FlakySensor(SimulatedBoard):
         fails = 3

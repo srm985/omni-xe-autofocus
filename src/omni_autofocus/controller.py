@@ -36,6 +36,10 @@ class ControllerError(RuntimeError):
     pass
 
 
+class SensorNoTargetError(ControllerError):
+    """The sensor replied with its "no measurement" value."""
+
+
 class Controller:
     def __init__(self, transport: Transport, *, sleep=time.sleep, clock=time.monotonic):
         self.t = transport
@@ -158,10 +162,16 @@ class Controller:
         return commands.parse_height_reply(self.transmit(b""))
 
     def read_height(self, attempts: int = 10) -> float:
+        """Read the sensor, retrying communication failures (not a "no target" answer)."""
         last: Exception | None = None
         for _ in range(attempts):
             try:
                 return self.read_height_once()
+            except commands.SensorNoTarget as e:
+                raise SensorNoTargetError(
+                    "the height sensor answered but sees no surface within its measuring range "
+                    "(the work surface is probably too far from or too close to the head)"
+                ) from e
             except (modbus.ModbusError, ValueError, ControllerError) as e:
                 log.debug("height read failed: %s", e)
                 last = e
