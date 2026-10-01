@@ -106,6 +106,14 @@ def scale_of(root: tk.Misc) -> float:
 # --- antialiased rounded rectangles (Tk's canvas cannot smooth curves) -------------------------------------
 
 
+def focus_ring(widget: tk.Widget, colour: str, normal) -> None:
+    """Show a keyboard-focus ring on a Label. Tk on Windows draws a label's highlight with
+    highlightbackground even when focused, so recolour that on focus changes. ``normal`` gives the
+    colour to restore (a callable, as it can depend on state)."""
+    widget.bind("<FocusIn>", lambda e: widget.configure(highlightbackground=colour), add="+")
+    widget.bind("<FocusOut>", lambda e: widget.configure(highlightbackground=normal()), add="+")
+
+
 def _rgb(colour: str) -> tuple[int, int, int]:
     c = colour.lstrip("#")
     return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
@@ -260,6 +268,7 @@ class Segmented(tk.Frame):
             lbl.grid(row=0, column=i, padx=(0 if i == 0 else 1, 0))
             lbl.bind("<Button-1>", lambda e, o=option: self.select(o, notify=True))
             lbl.bind("<space>", lambda e, o=option: self.select(o, notify=True))
+            focus_ring(lbl, palette.text, lambda o=option: self._bg(o))
             self._labels[option] = lbl
         self._paint()
 
@@ -278,13 +287,19 @@ class Segmented(tk.Frame):
         if notify and changed:
             self.command(option)
 
+    def _bg(self, option: str) -> str:
+        if option != self.value:
+            return self.p.bg
+        return self.p.accent if self.enabled else self.p.accent_disabled
+
     def _paint(self) -> None:
+        focused = self.focus_get()
         for option, lbl in self._labels.items():
             on = option == self.value
-            bg = (self.p.accent if self.enabled else self.p.accent_disabled) if on else self.p.bg
+            bg = self._bg(option)
             lbl.configure(
                 bg=bg,
-                highlightbackground=bg,
+                highlightbackground=self.p.text if lbl is focused else bg,
                 fg=self.p.on_accent if on else (self.p.text if self.enabled else self.p.muted),
                 font=(FONT, 9, "bold" if on else "normal"),
             )

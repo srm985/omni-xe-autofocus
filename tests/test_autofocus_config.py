@@ -625,3 +625,18 @@ def test_rest_after_the_probe_never_exceeds_the_approved_move(monkeypatch):
     autofocus.run(ctl, _lens_b(), passes=1, confirm=lambda p: approved.append(p.pulses) or True)
     assert approved[0] == -8000  # down 10 mm
     assert sum(commanded) >= approved[0]  # never further down than approved (a later pass corrects)
+
+
+def test_usb_failure_mid_move_is_a_motion_fault(monkeypatch):
+    from omni_autofocus import autofocus
+    from omni_autofocus.controller import Controller
+    from omni_autofocus.cyusb import UsbTimeout
+
+    board, ctl = _sim()
+
+    def lost(self, params, pulses, **kw):
+        raise UsbTimeout("endpoint 0x02 timed out")
+
+    monkeypatch.setattr(Controller, "move_axis", lost)
+    with pytest.raises(autofocus.MotionError, match="did not complete"):
+        autofocus.run(ctl, _lens_b())

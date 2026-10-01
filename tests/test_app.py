@@ -276,3 +276,14 @@ def test_lens_picker_is_locked_while_z_may_move(window, monkeypatch):
     window.autofocus()
     settle(window)
     assert seen[:1] == [False] and seen[-1] is True and window.lens_picker.enabled
+
+
+def test_focus_ring_shows_on_the_lens_picker(window):
+    from omni_autofocus import ui
+
+    label = window.lens_picker._labels["A"]
+    label.event_generate("<FocusIn>")
+    assert label.cget("highlightbackground") == window.palette.text
+    label.event_generate("<FocusOut>")
+    assert label.cget("highlightbackground") == window.palette.bg
+    assert callable(ui.focus_ring)

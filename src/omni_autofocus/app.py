@@ -323,8 +323,9 @@ class App:
         )
         self.status.pack(side="left", fill="x", expand=True)
         self.more = tk.Label(head, text="⋯", bg=p.bg, fg=p.muted, font=(font, 14), cursor="hand2")
-        self.more.configure(padx=int(8 * sc), pady=int(2 * sc), takefocus=1, highlightthickness=1)
-        self.more.configure(highlightthickness=2, highlightcolor=p.text, highlightbackground=p.bg)
+        self.more.configure(padx=int(8 * sc), pady=int(2 * sc), takefocus=1, highlightthickness=2)
+        self.more.configure(highlightcolor=p.text, highlightbackground=p.bg)
+        ui.focus_ring(self.more, p.text, lambda: p.bg)
         self.more.pack(side="right")
         self.detail = tk.Label(
             body, text=" ", bg=p.bg, fg=p.muted, font=(font, 9), anchor="nw", justify="left",
@@ -461,6 +462,8 @@ class App:
             return
         if moves and self._ladder_running():
             self._set_detail("Fine-tuning is using the laser. Close its window first.")
+            if self.app_settings.sounds:
+                _beep(False)  # audible when the hotkey was pressed from LightBurn
             return
         self.busy = True
         self.moving = moves
@@ -712,6 +715,9 @@ class App:
             self._set_detail(f"The startup setting could not be changed: {e}")
 
     def open_ladder(self) -> None:
+        if self.busy:
+            self._set_detail("Wait for the current task to finish, then open fine-tuning.")
+            return
         if self._ladder is not None and self._ladder.poll() is None:
             self._set_detail("Fine-tuning is already open in its own window.")
             return
@@ -742,8 +748,9 @@ class App:
             self.root.after(1000, self._watch_ladder)
             return
         self._ladder = None
-        self._set_status("Ready", INFO)
-        self._set_detail("Fine-tuning finished. Put the work piece under the head.")
+        if self.status.cget("text") == "Fine-tuning":  # keep anything shown since (an error, a height)
+            self._set_status("Ready", INFO)
+            self._set_detail("Fine-tuning finished. Put the work piece under the head.")
         if not self.busy:
             self.button.set_enabled(True)
             self._start(self._prepare_quietly)  # pick up a newly saved focus height

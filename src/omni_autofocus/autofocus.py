@@ -151,7 +151,7 @@ def run(
             ctl.move_axis(params, pulses)
         except ControllerBusyError:
             raise  # refused before moving: a job or the framing preview is running
-        except ControllerError as e:  # stall, end of travel, counter mismatch, lost contact mid-move
+        except (ControllerError, OSError) as e:  # stall, end of travel, counter mismatch, USB lost mid-move
             raise MotionError(
                 f"Z did not complete a {mm:+.1f} mm move ({e}). Stopped; check the Z axis"
             ) from e

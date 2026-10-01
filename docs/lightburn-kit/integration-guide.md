@@ -86,7 +86,7 @@ and each one came from something real:
 | Refuse while a job or framing preview runs | the controller would interleave the move with the job |
 | Verify the position counter after each move | catches a move the controller did not execute |
 | After each move, the reading must change by roughly the commanded amount, **same direction** | a reversed Z direction on another machine would otherwise send the second pass further into the work |
-| Until Z has been seen to follow, start a move over 4 mm with a checked 3 mm step, then re-plan the rest from the new reading | a reversed axis then goes only the 3 mm probe the wrong way; a badly wrong pitch is caught after the probe (e.g. 6 mm at twice the expected travel); clamp the rest so the total never exceeds the approved move |
+| Until Z has been seen to follow, start a move over 4 mm with a checked 3 mm step, then re-plan the rest from the new reading | a reversed axis then goes at most about 4 mm the wrong way (the probe, or a short unprobed move); a badly wrong pitch is caught after the probe (e.g. 6 mm at twice the expected travel); clamp the rest so the total never exceeds the approved move |
 | After a motion fault, ask before every move until a move checks out | the fault does not disappear with the next click |
 | At most two passes, then report | never loop on a mechanical problem |
 | Ask before a large downward move (e.g. > 10 mm) | up moves away from the work; down approaches it |
