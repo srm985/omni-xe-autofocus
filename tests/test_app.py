@@ -27,13 +27,17 @@ def test_describe_error_is_actionable():
 def test_describe_result():
     p1, p2 = plan(17.0), plan(0.0)
     moved = autofocus.FocusResult(autofocus.Outcome.IN_FOCUS, 222.0, 222.0, (p1, p2), True)
-    assert app.describe_result(moved) == ("In focus (moved +17.0 mm).", app.OK)
+    assert app.describe_result(moved) == (
+        "In focus",
+        "Moved +17.0 mm · sensor 222.0 mm, target 222.0 mm",
+        app.OK,
+    )
     still = autofocus.FocusResult(autofocus.Outcome.IN_FOCUS, 222.0, 222.0, (p2,), False)
-    assert app.describe_result(still)[0] == "Already in focus."
+    assert app.describe_result(still)[0] == "Already in focus"
     off = autofocus.FocusResult(autofocus.Outcome.NOT_CONVERGED, 221.0, 222.0, (p1,), True)
-    assert app.describe_result(off)[1] == app.ERR
+    assert app.describe_result(off)[2] == app.ERR
     no = autofocus.FocusResult(autofocus.Outcome.CANCELLED, 240.0, 222.0, (plan(-18.0),), False)
-    assert "did not move" in app.describe_result(no)[0]
+    assert app.describe_result(no)[:2] == ("Cancelled", "Z did not move.")
 
 
 def test_run_and_cli_commands(tmp_path):
@@ -103,10 +107,11 @@ def test_window_autofocus_in_simulation(window):
     assert "Lens B" in window.lens_info.cget("text")
     window.autofocus()
     settle(window)
-    assert window.status.cget("text") == "In focus (moved +17.0 mm)."
+    assert window.status.cget("text") == "In focus"
+    assert window.detail.cget("text").startswith("Moved +17.0 mm")
     window.autofocus()  # the simulated laser keeps its Z position
     settle(window)
-    assert window.status.cget("text") == "Already in focus."
+    assert window.status.cget("text") == "Already in focus"
 
 
 def test_window_asks_before_a_large_downward_move(window, monkeypatch):
@@ -117,7 +122,7 @@ def test_window_asks_before_a_large_downward_move(window, monkeypatch):
     window.autofocus()
     settle(window)
     assert asked and "DOWN 18.0 mm" in asked[0]
-    assert window.status.cget("text") == "Cancelled. Z did not move."
+    assert window.status.cget("text") == "Cancelled"
 
 
 def test_window_reports_errors(window, monkeypatch):
@@ -127,8 +132,9 @@ def test_window_reports_errors(window, monkeypatch):
     monkeypatch.setattr("omni_autofocus.controller.Controller.move_axis", busy)
     window.autofocus()
     settle(window)
-    assert "framing preview" in window.status.cget("text")
-    assert str(window.button.state()) == "()"  # usable again
+    assert window.status.cget("text") == "Stopped"
+    assert "framing preview" in window.detail.cget("text")
+    assert window.button.enabled  # usable again
 
 
 def test_settings_types_are_checked(tmp_path):
@@ -165,7 +171,7 @@ def test_window_cannot_close_while_busy(window, monkeypatch):
     window.busy = True
     try:
         window.close()
-        assert window.root.winfo_exists() and "Wait until Z has stopped" in window.status.cget("text")
+        assert window.root.winfo_exists() and "Wait until Z has stopped" in window.detail.cget("text")
     finally:
         window.busy = False
 
@@ -185,6 +191,17 @@ def test_first_run_shows_the_calibration_and_can_cancel(window, monkeypatch, tmp
     window.autofocus()
     settle(window)
     assert "First run" in asked[0] and "lens B 222.0 mm" in asked[0]
-    assert window.status.cget("text") == "Cancelled. Z did not move."
+    assert window.status.cget("text") == "Cancelled"
     board = window._session.open()[0].__enter__()
     assert board.sensor_mm == 205.0
+
+
+def test_lens_summary():
+    why = "lens B (150 mm field, from the only BSL profile in LightBurn, 'BSLFiber')"
+    assert app.lens_summary(why, 222.0) == "Lens B · from LightBurn profile 'BSLFiber' · focus 222.0 mm"
+    assert app.lens_summary("lens A (set explicitly)", None) == (
+        "Lens A · chosen here · focus read from the laser on first use"
+    )
+    assert app.lens_summary("lens A (from ComMarker Studio's lens setting; x)", 181.0).startswith(
+        "Lens A · from ComMarker Studio"
+    )
