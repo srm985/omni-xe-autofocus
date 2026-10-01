@@ -140,7 +140,7 @@ stored in your laser:
 | `focus.max_move_mm` | refuse larger single moves (default 60, at most 150) |
 | `focus.samples` | sensor readings per measurement (median, default 3, 1…15) |
 | `focus.field_a_mm`, `focus.field_b_mm` | lens field sizes used to recognise LightBurn profiles |
-| `app.hotkey` | the global shortcut: one or more of ctrl, alt, shift, win, then a letter, digit, F1–F12, space, home or end, e.g. `"ctrl+alt+f"`; `""` turns it off |
+| `app.hotkey` | the global shortcut: two of ctrl, alt, shift, win, then a letter, digit, F1–F12, space, home or end, e.g. `"ctrl+alt+f"`; `""` turns it off |
 | `app.confirm_down_above_mm` | downward moves larger than this ask first (default 10, 0…60) |
 | `app.sounds` | chime when autofocus finishes (default `true`) |
 | `z_axis.invert_direction` | flip Z direction if your machine moves the wrong way |
