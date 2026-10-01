@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from ctypes import wintypes as wt
 from pathlib import Path
 
@@ -71,34 +72,43 @@ def needs_confirmation(
     return motion_fault or autofocus.is_large_downward(p, app.confirm_down_above_mm)
 
 
+def updown(mm: float) -> str:
+    """'up 17.0 mm' / 'down 3.0 mm': plain words instead of signs."""
+    return f"{'up' if mm >= 0 else 'down'} {abs(mm):.1f} mm"
+
+
 def describe_result(r: autofocus.FocusResult) -> tuple[str, str, str]:
     """(headline, detail, tone) for a finished autofocus."""
-    reading = f"sensor {r.height_mm:.1f} mm, target {r.target_mm:.1f} mm"
     if r.outcome is autofocus.Outcome.CANCELLED:
-        return "Cancelled", ("Stopped after the first correction." if r.moved else "Z did not move."), WARN
+        return "Cancelled", ("Stopped after the first correction." if r.moved else "Z did not move."), INFO
     if r.outcome is autofocus.Outcome.NOT_CONVERGED:
-        return "Not in focus", f"Still {r.error_mm:+.2f} mm off ({reading}). Check the Z axis.", ERR
+        off = f"Still {abs(r.error_mm):.1f} mm off · height {r.height_mm:.1f} mm."
+        return "Not in focus", off + " Check the Z axis.", ERR
     if r.moved:
-        return "In focus", f"Moved {sum(p.move_mm for p in r.plans):+.1f} mm · {reading}", OK
-    return "Already in focus", reading[0].upper() + reading[1:], OK
+        return (
+            "In focus",
+            f"Moved {updown(sum(p.move_mm for p in r.plans))} · height {r.height_mm:.1f} mm",
+            OK,
+        )
+    return "Already in focus", f"Height {r.height_mm:.1f} mm · focus {r.target_mm:.1f} mm", OK
 
 
-def lens_summary(why: str, target_mm: float | None) -> str:
-    """One quiet line for the window, e.g. "Lens B · from LightBurn profile 'BSLFiber' · focus 222.0 mm"."""
-    lens_name = why.split(" (")[0].replace("lens", "Lens", 1)
+def lens_summary(choice: str, why: str, target_mm: float | None) -> str:
+    """One quiet line, e.g. "Auto → B · LightBurn 'BSLFiber' · 222.0 mm"."""
+    letter = why.split(" (")[0].split()[-1].upper()
+    head = f"Auto → {letter}" if choice == "Auto" else f"Lens {letter}"
     if "LightBurn" in why:
         name = why.split("'")[1] if why.count("'") >= 2 else ""
-        source = f"from LightBurn profile '{name}'" if name else "from LightBurn"
-    elif "set explicitly" in why:
-        source = "chosen here"
+        name = name if len(name) <= 24 else name[:23] + "…"
+        source = f"LightBurn '{name}'" if name else "LightBurn"
     elif "ComMarker" in why:
-        source = "from ComMarker Studio"
+        source = "ComMarker Studio"
     elif "simulation" in why:
         source = "simulation"
     else:
         source = ""
-    focus = f"focus {target_mm:.1f} mm" if target_mm is not None else "focus read from the laser on first use"
-    return " · ".join(part for part in (lens_name, source, focus) if part)
+    focus = f"{target_mm:.1f} mm" if target_mm is not None else "focus read on first use"
+    return " · ".join(part for part in (head, source, focus) if part)
 
 
 def window_title(simulate: bool) -> str:
@@ -246,6 +256,7 @@ def _save_state(state: dict, simulate: bool = False) -> None:
 
 class App:
     WIDTH = 300  # content width in design pixels (scaled for the screen)
+    QUIET_AFTER_DIALOG_S = 0.6  # ignore the Autofocus key briefly after a dialog (held/repeated Enter)
 
     def __init__(self, *, config_path: Path | None, simulate: bool):
         import tkinter as tk
@@ -257,15 +268,20 @@ class App:
         self._session = session.Session(config_path=config_path, simulate=simulate)
         self.events: queue.Queue = queue.Queue()
         self.busy = False
+        self.moving = False  # an operation that can move Z is running
         self.hotkey: Hotkey | None = None
         self._hotkey_tried = False
         self.app_settings = config.AppSettings()
         self.state = _load_state(simulate)
-        self.lens_choice = "Auto"
+        saved_lens = self.state.get("lens")
+        self.lens_choice = saved_lens if saved_lens in LENS_CHOICES else "Auto"
+        self._session.lens_override = LENS_CHOICES[self.lens_choice]
+        self._lens_dirty = False
         self._tone = INFO
-        self.moving = False  # an operation that can move Z is running
         self.motion_fault = bool(self.state.get("motion_fault"))
         self._verified_axis = None  # z_axis settings Z was last seen to follow
+        self._quiet_until = 0.0
+        self._ladder: subprocess.Popen | None = None
 
         self.root = tk.Tk()
         self.title = window_title(simulate)
@@ -278,71 +294,63 @@ class App:
         p = self.palette = ui.DARK if dark else ui.LIGHT
         sc = ui.scale_of(self.root)
         wrap = int(self.WIDTH * sc)
-        self.root.configure(bg=p.bg)
         font = ui.FONT
+        self.root.configure(bg=p.bg)
 
-        outer = tk.Frame(self.root, bg=p.bg, padx=int(12 * sc), pady=int(12 * sc))
-        outer.pack(fill="both", expand=True)
-        card = tk.Frame(
-            outer, bg=p.card, highlightbackground=p.border, highlightthickness=1,
-            padx=int(16 * sc), pady=int(14 * sc),
-        )  # fmt: skip
-        card.pack(fill="both", expand=True)
+        body = tk.Frame(self.root, bg=p.bg, padx=int(20 * sc), pady=int(16 * sc))
+        body.pack(fill="both", expand=True)
 
-        # Status: a coloured dot, a headline and a quiet detail line.
-        head = tk.Frame(card, bg=p.card)
+        # Status: a coloured dot, a one-line headline, two quiet lines of detail (fixed heights, so
+        # the button never moves under the pointer).
+        head = tk.Frame(body, bg=p.bg)
         head.pack(fill="x")
         d = int(10 * sc)
-        self.dot = tk.Canvas(head, width=d, height=d, bg=p.card, highlightthickness=0, bd=0)
+        self.dot = tk.Canvas(head, width=d, height=d, bg=p.bg, highlightthickness=0, bd=0)
         self._dot = self.dot.create_oval(1, 1, d - 1, d - 1, fill=p.info, outline="")
         self.dot.pack(side="left", padx=(0, int(8 * sc)))
         self.status = tk.Label(
-            head, text="Starting…", bg=p.card, fg=p.text, font=(font, 12, "bold"), anchor="w",
-            justify="left", wraplength=wrap - int(48 * sc),
-        )  # fmt: skip
+            head, text="Starting…", bg=p.bg, fg=p.text, font=(font, 12, "bold"), anchor="w"
+        )
         self.status.pack(side="left", fill="x", expand=True)
-        self.more = tk.Label(head, text="⋯", bg=p.card, fg=p.muted, font=(font, 14), cursor="hand2", padx=4)
+        self.more = tk.Label(head, text="⋯", bg=p.bg, fg=p.muted, font=(font, 14), cursor="hand2")
+        self.more.configure(padx=int(8 * sc), pady=int(2 * sc), takefocus=1, highlightthickness=1)
+        self.more.configure(highlightcolor=p.accent, highlightbackground=p.bg)
         self.more.pack(side="right")
         self.detail = tk.Label(
-            card, text="", bg=p.card, fg=p.muted, font=(font, 9), anchor="w", justify="left", wraplength=wrap
-        )
-        self.detail.pack(fill="x", pady=(int(2 * sc), 0))
-        if simulate:
-            tk.Label(
-                card,
-                text="SIMULATION · no laser is used",
-                bg=p.card,
-                fg=p.warn,
-                font=(font, 8, "bold"),
-                anchor="w",
-            ).pack(fill="x", pady=(int(4 * sc), 0))
+            body, text=" ", bg=p.bg, fg=p.muted, font=(font, 9), anchor="nw", justify="left",
+            wraplength=wrap, height=2,
+        )  # fmt: skip
+        self.detail.pack(fill="x", pady=(int(4 * sc), 0))
 
         self.button = ui.RoundButton(
-            card, text="Autofocus", command=self.autofocus, palette=p, scale=sc, width=self.WIDTH, height=46
-        )
-        self.button.pack(pady=(int(14 * sc), int(4 * sc)))
-        self.hint = tk.Label(card, text="", bg=p.card, fg=p.muted, font=(font, 9))
+            body, text="Autofocus", command=self.autofocus, palette=p, scale=sc, width=self.WIDTH, height=46,
+            guard=self._key_allowed,
+        )  # fmt: skip
+        self.button.pack(pady=(int(12 * sc), int(6 * sc)))
+        self.hint = tk.Label(body, text=" ", bg=p.bg, fg=p.muted, font=(font, 9))
         self.hint.pack()
 
-        tk.Frame(card, bg=p.border, height=1).pack(fill="x", pady=(int(12 * sc), int(10 * sc)))
-        row = tk.Frame(card, bg=p.card)
+        tk.Frame(body, bg=p.border, height=1).pack(fill="x", pady=(int(14 * sc), int(12 * sc)))
+        row = tk.Frame(body, bg=p.bg)
         row.pack(fill="x")
-        tk.Label(row, text="Lens", bg=p.card, fg=p.text, font=(font, 9)).pack(side="left")
+        tk.Label(row, text="Lens", bg=p.bg, fg=p.text, font=(font, 9)).pack(side="left")
         self.lens_picker = ui.Segmented(
-            row, options=list(LENS_CHOICES), value="Auto", command=self._lens_changed, palette=p
+            row,
+            options=list(LENS_CHOICES),
+            value=self.lens_choice,
+            command=self._lens_changed,
+            palette=p,
+            scale=sc,
         )
         self.lens_picker.pack(side="right")
-        self.lens_info = tk.Label(
-            card, text="", bg=p.card, fg=p.muted, font=(font, 8), anchor="w", justify="left", wraplength=wrap
-        )
-        self.lens_info.pack(fill="x", pady=(int(6 * sc), 0))
+        self.lens_info = tk.Label(body, text=" ", bg=p.bg, fg=p.muted, font=(font, 8), anchor="w")
+        self.lens_info.pack(fill="x", pady=(int(8 * sc), 0))
 
         self.on_top = tk.BooleanVar(value=self.state.get("on_top", True) is not False)
         self.autostart = tk.BooleanVar(value=False)
-        menu = tk.Menu(
-            self.root, tearoff=False, bg=p.card, fg=p.text, activebackground=p.accent,
-            activeforeground=p.on_accent, selectcolor=p.text, bd=0, font=(font, 9),
-        )  # fmt: skip
+        menu = tk.Menu(self.root, tearoff=False, bg=p.bg, fg=p.text, bd=0, font=(font, 9))
+        menu.configure(activebackground=p.accent, activeforeground=p.on_accent, selectcolor=p.text)
+        menu.configure(disabledforeground=p.muted)
         menu.add_command(label="Check height", command=self.check_height)
         menu.add_command(label="Fine-tune focus (test burns)…", command=self.open_ladder)
         menu.add_separator()
@@ -355,7 +363,8 @@ class App:
         menu.add_command(label="Open settings file", command=self.open_settings)
         menu.add_command(label="About", command=self.about)
         self.menu = menu
-        self.more.bind("<Button-1>", lambda e: menu.tk_popup(e.x_root, e.y_root))
+        for seq in ("<Button-1>", "<space>", "<Return>"):
+            self.more.bind(seq, lambda e: self._show_menu())
 
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._restore_position()
@@ -363,9 +372,10 @@ class App:
         ui.dark_title_bar(self.root, dark)
         if simulate:  # never let a simulation register the real app's hotkey or autostart
             menu.entryconfigure("Start with Windows", state="disabled")
-            self.hint.configure(text="Hotkey off in simulation")
+            self.hint.configure(text="Simulation · no laser is used, hotkey off")
         elif sys.platform == "win32":
             self.autostart.set(start_with_windows_enabled())
+        self.button.focus_set()
         self.root.after(50, self._pump)
         self._start(self._prepare)
 
@@ -400,13 +410,22 @@ class App:
             if vx <= x <= vx + vw - 100 and vy <= y <= vy + vh - 60:
                 self.root.geometry(f"+{x}+{y}")
 
+    def _show_menu(self) -> None:
+        m = self.more
+        self.menu.update_idletasks()
+        x = m.winfo_rootx() + m.winfo_width() - self.menu.winfo_reqwidth()
+        self.menu.tk_popup(x, m.winfo_rooty() + m.winfo_height())
+
+    def _key_allowed(self) -> bool:
+        return time.monotonic() >= self._quiet_until
+
     def _apply_app_settings(self, app: config.AppSettings) -> None:
         self.app_settings = app
         if self._hotkey_tried or self.simulate or sys.platform != "win32":
             return
         self._hotkey_tried = True  # one attempt per run: changing app.hotkey needs a restart
         if not app.hotkey:
-            self.hint.configure(text="")
+            self.hint.configure(text=" ")
             return
         try:
             mods, vk = config.parse_hotkey(app.hotkey)
@@ -439,9 +458,14 @@ class App:
     def _work(self, job, *args) -> None:
         try:
             job(*args)
-        except (Cancelled, session.NotAccepted):
-            self.events.put(("status", "Cancelled", WARN))
+        except Cancelled:
+            self.events.put(("status", "Cancelled", INFO))
             self.events.put(("detail", "Z did not move."))
+        except session.NotAccepted:
+            self.events.put(("status", "Not saved", INFO))
+            self.events.put(
+                ("detail", "Autofocus needs these focus heights. Press Autofocus to review them again.")
+            )
         except Exception as e:  # noqa: BLE001 - every failure becomes a status line
             log.debug("operation failed", exc_info=True)
             if isinstance(e, autofocus.MotionError):
@@ -463,7 +487,8 @@ class App:
                     self._handle(event)
                 except Exception as e:  # noqa: BLE001 - one bad event must not stop the window
                     log.exception("event %r failed", event[0])
-                    self._set_status(describe_error(e), ERR)
+                    self._set_status("Something went wrong", ERR)
+                    self._set_detail(describe_error(e))
         finally:
             self.root.after(50, self._pump)
 
@@ -478,9 +503,9 @@ class App:
         elif kind == "app":
             self._apply_app_settings(event[1])
         elif kind == "ask":
-            _, question, answer, done = event
+            _, question, default, answer, done = event
             try:
-                answer.append(self._ask_yes_no(question))
+                answer.append(self._ask_yes_no(question, default=default))
             finally:
                 done.set()  # an empty answer counts as "no"
         elif kind == "beep":
@@ -498,21 +523,30 @@ class App:
             self.moving = False
             self.button.set_enabled(True)
             self._set_dot(self._tone)
+            if self.root.focus_get() is None or self.root.focus_get() == self.button:
+                self.button.focus_set()
+            if self._lens_dirty:  # the lens was changed while busy: refresh the lens line now
+                self._lens_dirty = False
+                self._start(self._prepare_quietly)
 
-    def _ask(self, question: str) -> bool:
+    def _ask(self, question: str, *, default: str = "no") -> bool:
         """Ask from the worker thread; blocks until the user answers in the window."""
         answer: list[bool] = []
         done = threading.Event()
-        self.events.put(("ask", question, answer, done))
+        self.events.put(("ask", question, default, answer, done))
         done.wait()
         return bool(answer and answer[0])
 
-    def _ask_yes_no(self, question: str) -> bool:
+    def _ask_yes_no(self, question: str, *, default: str = "no") -> bool:
         from tkinter import messagebox
 
         self.root.deiconify()
         self.root.lift()
-        return messagebox.askyesno(self.title, question, parent=self.root, default="no")
+        try:
+            return messagebox.askyesno(self.title, question, parent=self.root, default=default)
+        finally:
+            self._quiet_until = time.monotonic() + self.QUIET_AFTER_DIALOG_S
+            self.button.focus_set()
 
     def _set_status(self, text: str, tone: str = INFO) -> None:
         p = self.palette
@@ -527,7 +561,7 @@ class App:
         self.dot.itemconfigure(self._dot, fill=colour)
 
     def _set_detail(self, text: str) -> None:
-        self.detail.configure(text=text)
+        self.detail.configure(text=text or " ")
 
     def _post(self, *event) -> None:
         self.events.put(event)
@@ -538,24 +572,35 @@ class App:
         calibrated = calibrate or self._session.path.exists()
 
         def accept(found: config.Settings, source: str) -> bool:  # first use: ask before saving
+            f = found.focus
+            self._post("status", "First use", BUSY)
             return self._ask(
-                f"First use: these focus heights were read from {source}.\n\n"
-                f"Lens A: {found.focus.target_a_mm:.1f} mm\nLens B: {found.focus.target_b_mm:.1f} mm\n"
-                "(sensor readings at best focus)\n\nUse them and save them to the settings file?"
+                f"Use the focus heights stored in your laser?\n\n"
+                f"Lens A ({f.field_a_mm:g} mm field): {f.target_a_mm:.1f} mm\n"
+                f"Lens B ({f.field_b_mm:g} mm field): {f.target_b_mm:.1f} mm\n\n"
+                + (
+                    "ComMarker measured these at the factory. "
+                    if source == "the laser"
+                    else f"They come from {source}. "
+                )
+                + "They are saved on this PC; you can fine-tune them later.",
+                default="yes",
             )
 
         s, why, _note = self._session.settings_with_lens(calibrate=calibrate, accept=accept)
         self._post("app", s.app)
-        self._post("lens", lens_summary(why, s.focus.target_mm if calibrated else None))
+        self._post("lens", lens_summary(self.lens_choice, why, s.focus.target_mm if calibrated else None))
         return s
 
     def _prepare(self) -> None:
         self._post("status", "Ready", INFO)
-        self._post("detail", "Place the work piece under the head, then press Autofocus.")
+        self._post("detail", "Put the work piece under the head.")
+        self._prepare_quietly()
+
+    def _prepare_quietly(self) -> None:
         try:
             self._settings(calibrate=False)  # never touch the laser just because the app started
         except (ControllerError, OSError, ValueError) as e:
-            self._post("status", "Ready", INFO)
             self._post("detail", describe_error(e))
             try:
                 s, _ = self._session.settings(calibrate=False)
@@ -569,26 +614,26 @@ class App:
     def _autofocus(self) -> None:
         note = self._session.check_other_software()
         self._post("status", "Measuring…", BUSY)
-        self._post("detail", note or "")
+        self._post("detail", note or "Reading the height sensor…")
         s = self._settings()
 
         def on_plan(i: int, p: autofocus.FocusPlan) -> None:
-            if p.needed:
-                self._post("status", f"Moving Z {p.move_mm:+.1f} mm…", BUSY)
-            self._post("detail", f"Sensor {p.height_mm:.1f} mm · target {p.target_mm:.1f} mm")
+            self._post("detail", f"Height {p.height_mm:.1f} mm · focus {p.target_mm:.1f} mm")
 
         fault = self.motion_fault
 
         def confirm(p: autofocus.FocusPlan) -> bool:
-            if not needs_confirmation(p, s.app, motion_fault=fault):
-                return True
-            direction = "DOWN" if p.move_mm < 0 else "UP"
-            towards = ", towards the work" if p.move_mm < 0 else ""
-            warning = "Last time Z did not move as expected.\n\n" if fault else ""
-            return self._ask(
-                f"{warning}Move the head {direction} {abs(p.move_mm):.1f} mm{towards}?\n\n"
-                f"Sensor reads {p.height_mm:.1f} mm, focus is at {p.target_mm:.1f} mm."
-            )
+            if needs_confirmation(p, s.app, motion_fault=fault):
+                self._post("status", "Confirm the move", BUSY)
+                towards = ", towards the work" if p.move_mm < 0 else ""
+                warning = "Last time Z did not move as expected.\n\n" if fault else ""
+                if not self._ask(
+                    f"{warning}Move the head {updown(p.move_mm)}{towards}?\n\n"
+                    f"Height {p.height_mm:.1f} mm, focus at {p.target_mm:.1f} mm."
+                ):
+                    return False
+            self._post("status", f"Moving {updown(p.move_mm)}…", BUSY)
+            return True
 
         dev, ctl = self._session.open()
         with dev:
@@ -607,13 +652,20 @@ class App:
 
     def _check_height(self) -> None:
         self._session.check_other_software()
+        self._post("status", "Measuring…", BUSY)
+        self._post("detail", "Reading the height sensor…")
         s = self._settings()
         dev, ctl = self._session.open()
         with dev:
             h = ctl.read_height_median(s.focus.samples)
         move = s.focus.target_mm - h
         self._post("status", f"Height {h:.1f} mm", INFO)
-        self._post("detail", f"Focus is at {s.focus.target_mm:.1f} mm · Autofocus would move {move:+.1f} mm")
+        if abs(move) < s.focus.deadband_mm:
+            self._post("detail", f"Focus is at {s.focus.target_mm:.1f} mm: already in focus.")
+        else:
+            self._post(
+                "detail", f"Focus is at {s.focus.target_mm:.1f} mm. Autofocus would move {updown(move)}."
+            )
 
     # -- menu actions (UI thread) -----------------------------------------------------------------------
 
@@ -621,8 +673,11 @@ class App:
         # Set here, on the UI thread; the worker only reads the session.
         self.lens_choice = choice
         self._session.lens_override = LENS_CHOICES.get(choice)
-        if not self.busy:
-            self._start(self._prepare)
+        _save_state({**_load_state(self.simulate), "lens": choice}, self.simulate)
+        if self.busy:
+            self._lens_dirty = True
+        else:
+            self._start(self._prepare_quietly)
 
     def _toggle_on_top(self) -> None:
         self.root.attributes("-topmost", self.on_top.get())
@@ -632,12 +687,17 @@ class App:
             set_start_with_windows(self.autostart.get())
         except OSError as e:
             self.autostart.set(not self.autostart.get())
-            self._set_status(f"Could not change the startup setting: {e}", ERR)
+            self._set_status("Could not change that", ERR)
+            self._set_detail(f"The startup setting could not be changed: {e}")
 
     def open_ladder(self) -> None:
+        if self._ladder is not None and self._ladder.poll() is None:
+            self._set_detail("Fine-tuning is already open in its own window.")
+            return
         cmd = cli_command(getattr(sys, "frozen", False), sys.executable)
         if cmd is None:
-            self._set_status("omni-autofocus.exe was not found next to the app.", ERR)
+            self._set_status("Cannot fine-tune", ERR)
+            self._set_detail("omni-autofocus.exe was not found next to the app. Reinstall Omni Autofocus.")
             return
         args = ["--simulate"] if self.simulate else []
         if self.config_path:
@@ -645,11 +705,23 @@ class App:
         lens = LENS_CHOICES.get(self.lens_choice)
         if lens:
             args += ["--lens", lens]
-        subprocess.Popen(
+        self._ladder = subprocess.Popen(
             [*cmd, *args, "focus-ladder"], creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
         )
-        self._set_status("Fine-tuning", INFO)
-        self._set_detail("Follow the steps in the new window. Autofocus here waits until it is done.")
+        self._set_status("Fine-tuning", BUSY)
+        self._set_detail("Follow the steps in the new window. Autofocus is unavailable until it is closed.")
+        self.root.after(1000, self._watch_ladder)
+
+    def _watch_ladder(self) -> None:
+        if self._ladder is not None and self._ladder.poll() is None:
+            self.root.after(1000, self._watch_ladder)
+            return
+        self._ladder = None
+        if self.status.cget("text") == "Fine-tuning":
+            self._set_status("Ready", INFO)
+            self._set_detail("Fine-tuning finished. Put the work piece under the head.")
+            if not self.busy:
+                self._start(self._prepare_quietly)  # pick up a newly saved focus height
 
     def check_driver(self) -> None:
         from . import driver

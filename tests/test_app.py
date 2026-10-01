@@ -28,11 +28,7 @@ def test_describe_error_is_actionable():
 def test_describe_result():
     p1, p2 = plan(17.0), plan(0.0)
     moved = autofocus.FocusResult(autofocus.Outcome.IN_FOCUS, 222.0, 222.0, (p1, p2), True)
-    assert app.describe_result(moved) == (
-        "In focus",
-        "Moved +17.0 mm · sensor 222.0 mm, target 222.0 mm",
-        app.OK,
-    )
+    assert app.describe_result(moved) == ("In focus", "Moved up 17.0 mm · height 222.0 mm", app.OK)
     still = autofocus.FocusResult(autofocus.Outcome.IN_FOCUS, 222.0, 222.0, (p2,), False)
     assert app.describe_result(still)[0] == "Already in focus"
     off = autofocus.FocusResult(autofocus.Outcome.NOT_CONVERGED, 221.0, 222.0, (p1,), True)
@@ -105,11 +101,11 @@ def settle(w, timeout=10.0):
 
 
 def test_window_autofocus_in_simulation(window):
-    assert "Lens B" in window.lens_info.cget("text")
+    assert window.lens_info.cget("text").startswith("Auto → B")
     window.autofocus()
     settle(window)
     assert window.status.cget("text") == "In focus"
-    assert window.detail.cget("text").startswith("Moved +17.0 mm")
+    assert window.detail.cget("text").startswith("Moved up 17.0 mm")
     window.autofocus()  # the simulated laser keeps its Z position
     settle(window)
     assert window.status.cget("text") == "Already in focus"
@@ -119,10 +115,10 @@ def test_window_asks_before_a_large_downward_move(window, monkeypatch):
     board = window._session.open()[0].__enter__()
     board.sensor_mm = 240.0  # 18 mm too far: the head would move down
     asked = []
-    monkeypatch.setattr(window, "_ask_yes_no", lambda q: asked.append(q) or False)
+    monkeypatch.setattr(window, "_ask_yes_no", lambda q, **kw: asked.append(q) or False)
     window.autofocus()
     settle(window)
-    assert asked and "DOWN 18.0 mm" in asked[0]
+    assert asked and "down 18.0 mm, towards the work" in asked[0]
     assert window.status.cget("text") == "Cancelled"
 
 
@@ -188,11 +184,11 @@ def test_first_run_shows_the_calibration_and_can_cancel(window, monkeypatch, tmp
     fresh = tmp_path / "fresh.toml"
     monkeypatch.setattr(window._session, "path", fresh)
     asked = []
-    monkeypatch.setattr(window, "_ask_yes_no", lambda q: asked.append(q) or False)
+    monkeypatch.setattr(window, "_ask_yes_no", lambda q, **kw: asked.append(q) or False)
     window.autofocus()
     settle(window)
-    assert "First use" in asked[0] and "Lens B: 222.0 mm" in asked[0]
-    assert window.status.cget("text") == "Cancelled"
+    assert "focus heights stored in your laser" in asked[0] and "Lens B (150 mm field): 222.0 mm" in asked[0]
+    assert window.status.cget("text") == "Not saved"
     assert not fresh.exists()  # declined: nothing saved
     board = window._session.open()[0].__enter__()
     assert board.sensor_mm == 205.0
@@ -200,13 +196,22 @@ def test_first_run_shows_the_calibration_and_can_cancel(window, monkeypatch, tmp
 
 def test_lens_summary():
     why = "lens B (150 mm field, from the only BSL profile in LightBurn, 'BSLFiber')"
-    assert app.lens_summary(why, 222.0) == "Lens B · from LightBurn profile 'BSLFiber' · focus 222.0 mm"
-    assert app.lens_summary("lens A (set explicitly)", None) == (
-        "Lens A · chosen here · focus read from the laser on first use"
+    assert app.lens_summary("Auto", why, 222.0) == "Auto → B · LightBurn 'BSLFiber' · 222.0 mm"
+    assert app.lens_summary("A", "lens A (set explicitly)", None) == "Lens A · focus read on first use"
+    assert app.lens_summary("Auto", "lens A (from ComMarker Studio's lens setting; x)", 181.0) == (
+        "Auto → A · ComMarker Studio · 181.0 mm"
     )
-    assert app.lens_summary("lens A (from ComMarker Studio's lens setting; x)", 181.0).startswith(
-        "Lens A · from ComMarker Studio"
-    )
+
+
+def test_updown():
+    assert app.updown(17.0) == "up 17.0 mm" and app.updown(-3.04) == "down 3.0 mm"
+
+
+def test_rounded_button_image_is_a_valid_png():
+    from omni_autofocus import ui
+
+    png = ui.rounded_rect_png(40, 20, 6, "#1859a0", "#ffffff", ring="#ffffff")
+    assert png.startswith(b"\x89PNG") and b"IEND" in png
 
 
 def test_motion_fault_latches_until_z_follows_again(window, monkeypatch):
@@ -214,7 +219,7 @@ def test_motion_fault_latches_until_z_follows_again(window, monkeypatch):
     board.z_reverse = False  # Z wired the other way round
     window._verified_axis = None  # as on a fresh start: direction not yet seen
     asked = []
-    monkeypatch.setattr(window, "_ask_yes_no", lambda q: asked.append(q) or True)
+    monkeypatch.setattr(window, "_ask_yes_no", lambda q, **kw: asked.append(q) or True)
     try:
         window.autofocus()
         settle(window)
