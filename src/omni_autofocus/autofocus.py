@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -69,6 +70,35 @@ class FocusResult:
         return self.target_mm - self.height_mm
 
 
+# A question that took longer than this was answered by a person: the head may have been moved by
+# hand meanwhile, so measure again before moving.
+HUMAN_PAUSE_S = 1.0
+RECHECK_MM = 0.5
+
+
+def check_motion(move_mm: float, change_mm: float) -> None:
+    """Raise unless the sensor reading changed roughly as much as Z was told to move, the same way.
+
+    Catches a reversed Z direction or a wrong pulses-per-mm before a second pass makes it worse.
+    Sensor noise is about +-0.2 mm, so small moves can never trip it.
+    """
+    wrong_way = move_mm * change_mm < 0 and abs(change_mm) > 0.5
+    too_little = abs(change_mm) < 0.5 * abs(move_mm) - 0.5
+    too_much = abs(change_mm) > 1.5 * abs(move_mm) + 0.5
+    if not (wrong_way or too_little or too_much):
+        return
+    msg = (
+        f"Z did not move as expected: asked for {move_mm:+.1f} mm, but the sensor reading changed "
+        f"{change_mm:+.1f} mm. Stopped"
+    )
+    if wrong_way:
+        raise FocusError(
+            msg + ". If Z moved the opposite way, run "
+            "'omni-autofocus config set z_axis.invert_direction true'"
+        )
+    raise FocusError(msg + " (stall, end of travel, or wrong z_axis pitch settings)")
+
+
 def run(
     ctl,
     settings: Settings,
@@ -80,14 +110,17 @@ def run(
 ) -> FocusResult:
     """Measure, move, re-measure: up to ``passes`` moves, then a final check.
 
-    ``confirm`` is asked before the first move only; ``on_plan`` sees every measurement. Raises
-    :class:`FocusError` when a reading is out of range or a move exceeds the safety limit.
+    ``confirm`` is asked before every move and decides itself whether to ask a person; ``on_plan``
+    sees every measurement. After every move the sensor must have changed as commanded
+    (:func:`check_motion`). Raises :class:`FocusError` when a reading is out of range, a move
+    exceeds the safety limit, Z did not follow, or the height changed while a person was asked.
     """
     samples = settings.focus.samples
     params = settings.z_axis.axis_params()
     plans: list[FocusPlan] = []
+    height = ctl.read_height_median(samples)
     for iteration in range(1, passes + 1):
-        p = plan(ctl.read_height_median(samples), settings)
+        p = plan(height, settings)
         plans.append(p)
         if on_plan:
             on_plan(iteration, p)
@@ -95,10 +128,20 @@ def run(
             return FocusResult(Outcome.IN_FOCUS, p.height_mm, p.target_mm, tuple(plans), iteration > 1)
         if dry_run:
             return FocusResult(Outcome.DRY_RUN, p.height_mm, p.target_mm, tuple(plans), False)
-        if iteration == 1 and confirm and not confirm(p):
-            return FocusResult(Outcome.CANCELLED, p.height_mm, p.target_mm, tuple(plans), False)
+        asked_at = time.monotonic()
+        if confirm and not confirm(p):
+            return FocusResult(Outcome.CANCELLED, p.height_mm, p.target_mm, tuple(plans), iteration > 1)
+        if time.monotonic() - asked_at > HUMAN_PAUSE_S:
+            again = ctl.read_height_median(samples)
+            if abs(again - height) > RECHECK_MM:
+                raise FocusError(
+                    f"the height changed while waiting for an answer ({height:.1f} -> {again:.1f} mm); "
+                    "nothing moved, start autofocus again"
+                )
         ctl.move_axis(params, p.pulses)
-    height = ctl.read_height_median(samples)
+        new_height = ctl.read_height_median(samples)
+        check_motion(p.move_mm, new_height - height)
+        height = new_height
     target = settings.focus.target_mm
     outcome = Outcome.IN_FOCUS if abs(target - height) <= FOCUS_TOLERANCE_MM else Outcome.NOT_CONVERGED
     return FocusResult(outcome, height, target, tuple(plans), bool(plans))

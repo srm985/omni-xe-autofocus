@@ -129,3 +129,62 @@ def test_window_reports_errors(window, monkeypatch):
     settle(window)
     assert "framing preview" in window.status.cget("text")
     assert str(window.button.state()) == "()"  # usable again
+
+
+def test_settings_types_are_checked(tmp_path):
+    path = tmp_path / "bad.toml"
+    path.write_text("[app]\nhotkey = true\n")
+    with pytest.raises(ValueError, match="app.hotkey must be str"):
+        config.load(path)
+    path.write_text("[focus]\noffset_mm = 1\nsamples = 5\n")  # ints are fine for float settings
+    s = config.load(path)
+    assert s.focus.offset_mm == 1.0 and isinstance(s.focus.offset_mm, float) and s.focus.samples == 5
+    path.write_text("[focus]\nsamples = 2.5\n")
+    with pytest.raises(ValueError, match="focus.samples must be int"):
+        config.load(path)
+
+
+@pytest.mark.skipif(__import__("sys").platform != "win32", reason="Windows named mutex")
+def test_laser_lock_is_exclusive():
+    name = r"Local\OmniAutofocusLaserTest"
+    with session.LaserLock(name):
+        with pytest.raises(session.ConflictError, match="another Omni Autofocus"):
+            with session.LaserLock(name):
+                pass
+    with session.LaserLock(name):  # released again
+        pass
+
+
+def test_simulation_is_marked_and_never_registers_the_hotkey(window):
+    assert window.title == "Omni Autofocus (simulation)"
+    assert window.root.title() == window.title
+    assert window.hotkey is None
+
+
+def test_window_cannot_close_while_busy(window, monkeypatch):
+    window.busy = True
+    try:
+        window.close()
+        assert window.root.winfo_exists() and "Wait until Z has stopped" in window.status.cget("text")
+    finally:
+        window.busy = False
+
+
+def test_bad_event_does_not_stop_the_window(window):
+    window.events.put(("lens",))  # malformed: missing text
+    window.events.put(("status", "still alive", app.INFO))
+    settle(window)
+    assert window.status.cget("text") == "still alive"
+
+
+def test_first_run_shows_the_calibration_and_can_cancel(window, monkeypatch, tmp_path):
+    fresh = tmp_path / "fresh.toml"
+    monkeypatch.setattr(window._session, "path", fresh)
+    asked = []
+    monkeypatch.setattr(window, "_ask_yes_no", lambda q: asked.append(q) or False)
+    window.autofocus()
+    settle(window)
+    assert "First run" in asked[0] and "lens B 222.0 mm" in asked[0]
+    assert window.status.cget("text") == "Cancelled. Z did not move."
+    board = window._session.open()[0].__enter__()
+    assert board.sensor_mm == 205.0

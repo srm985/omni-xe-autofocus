@@ -25,6 +25,46 @@ class ConflictError(ControllerError):
     """Another program that must not run at the same time (ComMarker Studio) is running."""
 
 
+LASER_LOCK_NAME = "Local\\OmniAutofocusLaser"
+
+
+class LaserLock:
+    """Held while this program talks to the laser, so two Omni Autofocus processes (say the app's
+    hotkey during a fine-tuning run) never move Z at the same time. Windows only; a no-op elsewhere."""
+
+    def __init__(self, name: str = LASER_LOCK_NAME):
+        self.name = name
+        self._handle = None
+
+    def __enter__(self) -> LaserLock:
+        if sys.platform != "win32":
+            return self
+        import ctypes
+        from ctypes import wintypes as wt
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateMutexW.restype = wt.HANDLE
+        k32.CreateMutexW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.LPCWSTR]
+        k32.CloseHandle.argtypes = [wt.HANDLE]
+        handle = k32.CreateMutexW(None, False, self.name)
+        if not handle:
+            return self  # cannot lock: carry on rather than block the user
+        if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS: someone else holds it
+            k32.CloseHandle(handle)
+            raise ConflictError(
+                "another Omni Autofocus window is using the laser (fine-tuning?). Finish there first."
+            )
+        self._handle = handle
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self._handle:
+            import ctypes
+
+            ctypes.windll.kernel32.CloseHandle(self._handle)
+            self._handle = None
+
+
 def running_programs() -> set[str]:
     if sys.platform != "win32":
         return set()
@@ -83,9 +123,15 @@ class Session:
             )
         from .cyusb import CyUsbDevice  # imported lazily: Windows-only
 
-        dev = CyUsbDevice.open_first()
+        stack = contextlib.ExitStack()
+        stack.enter_context(LaserLock())
+        try:
+            dev = stack.enter_context(CyUsbDevice.open_first())
+        except BaseException:
+            stack.close()
+            raise
         log.info("opened %s", dev.path)
-        return dev, Controller(dev)
+        return stack, Controller(dev)
 
     def check_other_software(self) -> str | None:
         """Raise if ComMarker Studio is running (unless forced); return a note if LightBurn is."""
@@ -110,8 +156,10 @@ class Session:
         try:
             with dev:
                 return config.from_commarker(read_laser_calibration(ctl)), "the laser"
-        except (ControllerError, OSError, ValueError, KeyError, IndexError) as e:
-            log.info("could not read the calibration from the laser: %s", e)
+        except (flash.FlashError, ValueError, KeyError, IndexError) as e:
+            # The laser answered but has no usable stored calibration. Busy or communication errors
+            # propagate instead: retrying later gets the laser's own values.
+            log.info("the laser has no usable stored calibration: %s", e)
         try:
             return config.load_commarker(config.COMMARKER_DIR), "ComMarker Studio's settings"
         except (OSError, ValueError, KeyError, IndexError) as e:

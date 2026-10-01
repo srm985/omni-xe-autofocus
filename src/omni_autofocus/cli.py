@@ -188,15 +188,16 @@ def _autofocus(ctl: Controller, s: config.Settings, *, passes: int, dry_run: boo
             f"move {p.move_mm:+.3f} mm ({p.pulses:+d} pulses)"
         )
 
+    asked: list[bool] = []
+
+    def confirm(p: autofocus.FocusPlan) -> bool:  # the command line asks once, before the first move
+        if asked:
+            return True
+        asked.append(True)
+        return _confirm("Move the Z axis now?", yes)
+
     try:
-        result = autofocus.run(
-            ctl,
-            s,
-            passes=passes,
-            dry_run=dry_run,
-            confirm=lambda p: _confirm("Move the Z axis now?", yes),
-            on_plan=show,
-        )
+        result = autofocus.run(ctl, s, passes=passes, dry_run=dry_run, confirm=confirm, on_plan=show)
     except autofocus.FocusError as e:
         print(f"Error: {e}")
         return 2
@@ -578,6 +579,11 @@ def main(argv: list[str] | None = None) -> int:
         code = _run(sys.argv[1:] or ["focus"])
     except SystemExit as e:  # argparse errors and --help/--version
         code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+    except Exception:  # noqa: BLE001 - show it in the window instead of closing on a traceback
+        import traceback
+
+        traceback.print_exc()
+        code = 1
     if _owns_console():
         _pause(code)
     return code

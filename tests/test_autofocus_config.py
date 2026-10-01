@@ -289,12 +289,48 @@ def test_cli_focus_warns_when_not_converged(monkeypatch, capsys):
     from omni_autofocus import cli
     from omni_autofocus.controller import Controller
 
-    real_move = Controller.move_axis
+    real_move = Controller.move_axis  # Z only travels 80 % of each move: plausible, but never converges
     monkeypatch.setattr(
-        Controller, "move_axis", lambda self, params, pulses, **kw: real_move(self, params, 1)
+        Controller, "move_axis", lambda self, params, pulses, **kw: real_move(self, params, int(pulses * 0.8))
     )
     assert cli.main(["--simulate", "--lens", "b", "focus", "--yes"]) == 3
     assert "Warning: still" in capsys.readouterr().out
+
+
+def test_cli_focus_stops_when_z_does_not_follow(monkeypatch, capsys):
+    from omni_autofocus import cli
+    from omni_autofocus.controller import Controller
+
+    real_move = Controller.move_axis  # stalled axis: the counter moves, the head does not
+    monkeypatch.setattr(
+        Controller, "move_axis", lambda self, params, pulses, **kw: real_move(self, params, 1)
+    )
+    assert cli.main(["--simulate", "--lens", "b", "focus", "--yes"]) == 2
+    assert "Z did not move as expected" in capsys.readouterr().out
+
+
+def test_reversed_z_direction_stops_after_the_first_move(tmp_path):
+    from omni_autofocus import autofocus
+    from omni_autofocus.controller import Controller
+    from omni_autofocus.simulator import FakeClock, SimulatedBoard
+
+    board = SimulatedBoard(sensor_mm=205.0, z_reverse=False)  # machine wired the other way round
+    clock = FakeClock()
+    ctl = Controller(board, sleep=clock.sleep, clock=clock)
+    s = replace(config.Settings(), focus=replace(config.Settings().focus, lens="b"))
+    with pytest.raises(autofocus.FocusError, match="invert_direction"):
+        autofocus.run(ctl, s, confirm=lambda p: True)
+    assert board.sensor_mm == pytest.approx(188.0)  # one 17 mm move the wrong way, not a second one
+
+
+def test_check_motion_ignores_sensor_noise():
+    from omni_autofocus import autofocus
+
+    autofocus.check_motion(0.3, -0.2)  # tiny move inside the noise
+    autofocus.check_motion(17.0, 16.6)
+    for move, change in ((17.0, -17.0), (17.0, 3.0), (2.0, 5.0)):
+        with pytest.raises(autofocus.FocusError):
+            autofocus.check_motion(move, change)
 
 
 def test_cli_focus_ladder_retries_when_controller_busy(monkeypatch, capsys):
@@ -393,3 +429,18 @@ def test_simulate_never_writes_the_real_settings_file(tmp_path, monkeypatch):
     assert cli.main(["--simulate", "--lens", "b", "focus", "--yes"]) == 0
     assert not config.default_config_path().exists()
     assert (tmp_path / "tmp" / "omni-autofocus-simulate.toml").exists()
+
+
+def test_unexpected_error_keeps_the_console_open(monkeypatch, capsys):
+    from omni_autofocus import cli
+
+    def boom(argv):
+        raise KeyError("surprise")
+
+    paused = []
+    monkeypatch.setattr(cli.sys, "argv", ["omni-autofocus.exe"])
+    monkeypatch.setattr(cli, "_run", boom)
+    monkeypatch.setattr(cli, "_owns_console", lambda: True)
+    monkeypatch.setattr(cli, "_pause", paused.append)
+    assert cli.main() == 1
+    assert paused == [1] and "surprise" in capsys.readouterr().err

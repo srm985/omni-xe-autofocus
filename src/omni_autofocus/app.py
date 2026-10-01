@@ -21,7 +21,7 @@ import threading
 from ctypes import wintypes as wt
 from pathlib import Path
 
-from . import __version__, autofocus, config, session
+from . import __version__, autofocus, config, lens, session
 from .controller import ControllerBusyError, ControllerError, SensorNoTargetError
 
 log = logging.getLogger(__name__)
@@ -38,8 +38,14 @@ OK, WARN, ERR, INFO = "#1a7f37", "#9a6700", "#cf222e", ""
 # --- pure helpers (tested without a window) -----------------------------------------------------------
 
 
+class Cancelled(Exception):
+    """The user said no to a question; nothing moved."""
+
+
 def describe_error(e: BaseException) -> str:
     """A short, actionable sentence for anything an operation can raise."""
+    if isinstance(e, lens.LensError):
+        return "Cannot tell which lens is fitted. Choose Lens A or Lens B in this window."
     if isinstance(e, ControllerBusyError):
         return "The laser is busy. Stop the LightBurn job or close the framing preview, then try again."
     if isinstance(e, SensorNoTargetError):
@@ -48,7 +54,8 @@ def describe_error(e: BaseException) -> str:
             "machine's Z buttons, then try again."
         )
     if isinstance(e, session.ConflictError):
-        return str(e)
+        msg = str(e)
+        return msg[0].upper() + msg[1:]
     if isinstance(e, autofocus.FocusError):
         msg = str(e)
         return msg[0].upper() + msg[1:] + "."
@@ -69,6 +76,10 @@ def describe_result(r: autofocus.FocusResult) -> tuple[str, str]:
     if r.moved:
         return f"In focus (moved {sum(p.move_mm for p in r.plans):+.1f} mm).", OK
     return "Already in focus.", OK
+
+
+def window_title(simulate: bool) -> str:
+    return f"{APP_NAME} (simulation)" if simulate else APP_NAME
 
 
 def run_command(frozen: bool, executable: str) -> str:
@@ -149,20 +160,21 @@ def set_start_with_windows(enabled: bool) -> None:
                 pass
 
 
-def _already_running() -> bool:
+def _already_running(name: str) -> bool:
     """Hold a named mutex for the app's lifetime; True if another instance holds it."""
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     k32.CreateMutexW.restype = wt.HANDLE
     k32.CreateMutexW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.LPCWSTR]
     global _MUTEX
-    _MUTEX = k32.CreateMutexW(None, False, MUTEX_NAME)
+    _MUTEX = k32.CreateMutexW(None, False, name)
     return ctypes.get_last_error() == 183  # ERROR_ALREADY_EXISTS
 
 
-def _show_existing_window() -> None:
+def _show_existing_window(title: str) -> None:
     user32 = ctypes.windll.user32
     user32.FindWindowW.restype = wt.HWND
-    hwnd = user32.FindWindowW(None, APP_NAME)
+    user32.FindWindowW.argtypes = [wt.LPCWSTR, wt.LPCWSTR]
+    hwnd = user32.FindWindowW("TkTopLevel", title)  # Tk's top-level window class
     if hwnd:
         user32.ShowWindow(hwnd, 9)  # SW_RESTORE
         user32.SetForegroundWindow(hwnd)
@@ -217,11 +229,13 @@ class App:
         self.events: queue.Queue = queue.Queue()
         self.busy = False
         self.hotkey: Hotkey | None = None
+        self._hotkey_tried = False
         self.app_settings = config.AppSettings()
         self.state = _load_state()
 
         self.root = tk.Tk()
-        self.root.title(APP_NAME)
+        self.title = window_title(simulate)
+        self.root.title(self.title)
         icon = Path(__file__).with_name("assets") / "icon.ico"
         if icon.exists():
             self.root.iconbitmap(default=str(icon))
@@ -266,10 +280,11 @@ class App:
         self.more["menu"] = menu
 
         self.root.protocol("WM_DELETE_WINDOW", self.close)
-        self.root.bind("<Return>", lambda e: self.autofocus())
         self._restore_position()
         self.root.attributes("-topmost", self.on_top.get())
-        if sys.platform == "win32":
+        if simulate:  # never let a simulation register the real app's hotkey or autostart
+            menu.entryconfigure("Start with Windows", state="disabled")
+        elif sys.platform == "win32":
             self.autostart.set(start_with_windows_enabled())
         self.root.after(50, self._pump)
         self._start(self._prepare)
@@ -280,7 +295,8 @@ class App:
         self.root.mainloop()
 
     def close(self) -> None:
-        if self.busy and not self._ask_yes_no("Z may still be moving. Quit anyway?"):
+        if self.busy:  # quitting would abandon a move half-way; the installer's close request waits
+            self._set_status("Wait until Z has stopped, then close the window.", WARN)
             return
         if self.hotkey:
             self.hotkey.stop()
@@ -296,20 +312,22 @@ class App:
 
     def _apply_app_settings(self, app: config.AppSettings) -> None:
         self.app_settings = app
-        if self.hotkey is None and app.hotkey and sys.platform == "win32":
-            try:
-                mods, vk = config.parse_hotkey(app.hotkey)
-            except ValueError as e:
-                self._set_detail(f"Hotkey off: {e}")
-                return
-            self.hotkey = Hotkey(mods, vk, lambda: self.events.put(("hotkey",)))
-            self.hotkey.start()
-            self.hotkey.ready.wait(1.0)
-            if self.hotkey.ok:
-                self.button.configure(text=f"Autofocus   ({app.hotkey.title()})")
-            else:
-                self.hotkey = None
-                self._set_detail(f"Hotkey {app.hotkey} is used by another program (see app.hotkey).")
+        if self._hotkey_tried or self.simulate or not app.hotkey or sys.platform != "win32":
+            return
+        self._hotkey_tried = True  # one attempt per run: changing app.hotkey needs a restart
+        try:
+            mods, vk = config.parse_hotkey(app.hotkey)
+        except ValueError as e:
+            self._set_detail(f"Hotkey off: {e}")
+            return
+        self.hotkey = Hotkey(mods, vk, lambda: self.events.put(("hotkey",)))
+        self.hotkey.start()
+        self.hotkey.ready.wait(1.0)
+        if self.hotkey.ok:
+            self.button.configure(text=f"Autofocus   ({app.hotkey.title()})")
+        else:
+            self.hotkey = None
+            self._set_detail(f"Hotkey {app.hotkey} is used by another program (see app.hotkey).")
 
     # -- worker plumbing ------------------------------------------------------------------------------
 
@@ -324,6 +342,8 @@ class App:
     def _work(self, job, *args) -> None:
         try:
             job(*args)
+        except Cancelled:
+            self.events.put(("status", "Cancelled. Z did not move.", WARN))
         except Exception as e:  # noqa: BLE001 - every failure becomes a status line
             log.debug("operation failed", exc_info=True)
             self.events.put(("status", describe_error(e), ERR))
@@ -334,31 +354,42 @@ class App:
     def _pump(self) -> None:
         try:
             while True:
-                event = self.events.get_nowait()
-                kind = event[0]
-                if kind == "status":
-                    self._set_status(event[1], event[2])
-                elif kind == "detail":
-                    self._set_detail(event[1])
-                elif kind == "lens":
-                    self.lens_info.configure(text=event[1])
-                elif kind == "app":
-                    self._apply_app_settings(event[1])
-                elif kind == "ask":
-                    _, question, answer, done = event
-                    answer.append(self._ask_yes_no(question))
-                    done.set()
-                elif kind == "beep":
-                    if self.app_settings.sounds:
-                        _beep(event[1])
-                elif kind == "hotkey":
-                    self.autofocus()
-                elif kind == "idle":
-                    self.busy = False
-                    self.button.state(["!disabled"])
-        except queue.Empty:
-            pass
-        self.root.after(50, self._pump)
+                try:
+                    event = self.events.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    self._handle(event)
+                except Exception as e:  # noqa: BLE001 - one bad event must not stop the window
+                    log.exception("event %r failed", event[0])
+                    self._set_status(describe_error(e), ERR)
+        finally:
+            self.root.after(50, self._pump)
+
+    def _handle(self, event: tuple) -> None:
+        kind = event[0]
+        if kind == "status":
+            self._set_status(event[1], event[2])
+        elif kind == "detail":
+            self._set_detail(event[1])
+        elif kind == "lens":
+            self.lens_info.configure(text=event[1])
+        elif kind == "app":
+            self._apply_app_settings(event[1])
+        elif kind == "ask":
+            _, question, answer, done = event
+            try:
+                answer.append(self._ask_yes_no(question))
+            finally:
+                done.set()  # an empty answer counts as "no"
+        elif kind == "beep":
+            if self.app_settings.sounds:
+                _beep(event[1])
+        elif kind == "hotkey":
+            self.autofocus()
+        elif kind == "idle":
+            self.busy = False
+            self.button.state(["!disabled"])
 
     def _ask(self, question: str) -> bool:
         """Ask from the worker thread; blocks until the user answers in the window."""
@@ -366,14 +397,14 @@ class App:
         done = threading.Event()
         self.events.put(("ask", question, answer, done))
         done.wait()
-        return answer[0]
+        return bool(answer and answer[0])
 
     def _ask_yes_no(self, question: str) -> bool:
         from tkinter import messagebox
 
         self.root.deiconify()
         self.root.lift()
-        return messagebox.askyesno(APP_NAME, question, parent=self.root)
+        return messagebox.askyesno(self.title, question, parent=self.root, default="no")
 
     def _set_status(self, text: str, colour: str = INFO) -> None:
         self.status.configure(text=text, foreground=colour)
@@ -396,8 +427,11 @@ class App:
             else "Focus heights are read from the laser on first use."
         )
         self._post("lens", f"{why[0].upper()}{why[1:]}. {focus}")
-        if note:
-            self._post("detail", note)
+        if note and not self._ask(
+            f"{note}.\n\nFocus heights (sensor readings): lens A {s.focus.target_a_mm:.1f} mm, "
+            f"lens B {s.focus.target_b_mm:.1f} mm.\n\nContinue?"
+        ):
+            raise Cancelled
         return s
 
     def _prepare(self) -> None:
@@ -535,7 +569,7 @@ class App:
     def _info(self, text: str) -> None:
         from tkinter import messagebox
 
-        messagebox.showinfo(APP_NAME, text, parent=self.root)
+        messagebox.showinfo(self.title, text, parent=self.root)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -548,8 +582,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.simulate and not args.config:
         args.config = str(Path(tempfile.gettempdir()) / "omni-autofocus-simulate.toml")
     if sys.platform == "win32":
-        if _already_running():
-            _show_existing_window()
+        if _already_running(MUTEX_NAME + ("Simulation" if args.simulate else "")):
+            _show_existing_window(window_title(args.simulate))
             return 0
         try:
             ctypes.windll.shcore.SetProcessDpiAwareness(1)  # crisp text on scaled displays

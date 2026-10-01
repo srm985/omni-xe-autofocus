@@ -140,7 +140,11 @@ def test_calibration_falls_back_to_commarker_when_the_store_is_unreadable(monkey
 
     monkeypatch.setattr(config, "COMMARKER_DIR", tmp_path / "cm")
     (tmp_path / "cm" / "config").mkdir(parents=True)
-    cfg = {"lmcPars": {"params": [{"parName": "default", "fBestFocalDistance_B": 219.5}]}}
+    cfg = {
+        "lmcPars": {
+            "params": [{"parName": "default", "fBestFocalDistance": 180.0, "fBestFocalDistance_B": 219.5}]
+        }
+    }
     (tmp_path / "cm" / "config" / "lcsparam.cfg").write_bytes(config.encode_commarker_cfg(cfg))
 
     def unreadable(ctl):
@@ -170,3 +174,22 @@ def test_read_commarker_file_handles_qcompressed_and_plain():
     board, ctl = make({"./config/q.cfg": flash.qt_compress(raw), "./config/p.cfg": raw}, compressed=False)
     assert flash.read_commarker_file(ctl, "q.cfg") == raw
     assert flash.read_commarker_file(ctl, "p.cfg") == raw
+
+
+def test_calibration_without_focus_heights_is_rejected():
+    from omni_autofocus import config
+
+    with pytest.raises(ValueError, match="fBestFocalDistance_B"):
+        config.from_commarker({"lmcPars": {"params": [{"parName": "default", "fBestFocalDistance": 181.0}]}})
+
+
+def test_busy_laser_does_not_fall_back_to_commarker(monkeypatch, tmp_path):
+    from omni_autofocus import session
+    from omni_autofocus.controller import ControllerBusyError
+
+    def busy(ctl):
+        raise ControllerBusyError("busy")
+
+    monkeypatch.setattr(session, "read_laser_calibration", busy)
+    with pytest.raises(ControllerBusyError):
+        session.Session(config_path=tmp_path / "x.toml", simulate=True).factory_calibration()

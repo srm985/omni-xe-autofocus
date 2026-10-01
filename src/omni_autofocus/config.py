@@ -91,11 +91,25 @@ SECTIONS = ("focus", "z_axis", "app")
 
 
 def _apply(section_cls, data: dict, where: str):
+    defaults = section_cls()
     known = {f.name for f in fields(section_cls)}
     unknown = set(data) - known
     if unknown:
         raise ValueError(f"unknown setting(s) in [{where}]: {', '.join(sorted(unknown))}")
-    return section_cls(**data)
+    values = {}
+    for key, value in data.items():
+        expected = type(getattr(defaults, key))
+        ok = (
+            isinstance(value, bool)
+            if expected is bool
+            else isinstance(value, (int, float)) and not isinstance(value, bool)
+            if expected is float
+            else isinstance(value, expected) and not isinstance(value, bool)
+        )
+        if not ok:
+            raise ValueError(f"{where}.{key} must be {expected.__name__}, not {value!r}")
+        values[key] = float(value) if expected is float else value
+    return section_cls(**values)
 
 
 def settings_path(path: Path | None = None) -> Path:
@@ -225,6 +239,9 @@ def from_commarker(param_cfg: dict, base: Settings | None = None) -> Settings:
     base = base or Settings()
     params = param_cfg["lmcPars"]["params"]
     lmc = next((p for p in params if p.get("parName") == "default"), params[0])
+    missing = [k for k in ("fBestFocalDistance", "fBestFocalDistance_B") if k not in lmc]
+    if missing:  # never fall back to example focus heights silently
+        raise ValueError(f"the calibration has no focus heights ({', '.join(missing)} missing)")
 
     def field(key: str, default: float) -> float:
         try:
