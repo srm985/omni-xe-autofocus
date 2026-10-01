@@ -7,6 +7,7 @@ Retry/validation behaviour mirrors the vendor's ``Transfer::writeAndReadCmd`` /
 from __future__ import annotations
 
 import logging
+import statistics
 import struct
 import time
 from typing import Protocol
@@ -160,6 +161,12 @@ class Controller:
         self.transmit(commands.HEIGHT_REQUEST)
         self._sleep(settle_s)
         return commands.parse_height_reply(self.transmit(b""))
+
+    def read_height_median(self, samples: int = 3) -> float:
+        """Median of several readings; damps the sensor's roughly +-0.2 mm reading-to-reading noise."""
+        readings = sorted(self.read_height() for _ in range(max(1, samples)))
+        log.info("height samples: %s", ", ".join(f"{r:.3f}" for r in readings))
+        return statistics.median(readings)
 
     def read_height(self, attempts: int = 10) -> float:
         """Read the sensor, retrying communication failures (not a "no target" answer)."""

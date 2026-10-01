@@ -162,7 +162,7 @@ def cmd_focus(args) -> int:
     dev, ctl = _open_controller()
     with dev:
         for iteration in range(1, args.passes + 1):
-            height = ctl.read_height()
+            height = ctl.read_height_median(s.focus.samples)
             try:
                 p = autofocus.plan(height, s)
             except autofocus.FocusError as e:
@@ -182,7 +182,7 @@ def cmd_focus(args) -> int:
                 print("Cancelled.")
                 return 1
             ctl.move_axis(s.z_axis.axis_params(), p.pulses)
-        final = autofocus.plan(ctl.read_height(), s)
+        final = autofocus.plan(ctl.read_height_median(s.focus.samples), s)
         print(f"final: sensor {final.height_mm:.3f} mm, error {final.target_mm - final.height_mm:+.3f} mm")
     return 0
 

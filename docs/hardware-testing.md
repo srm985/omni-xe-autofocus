@@ -38,3 +38,4 @@ Results log (fill in):
 | 2026-10-01 | 6 | pass | with the run-state fix: Z moved; sensor 200.9 -> 202.1 mm (+1.2). Board state 3 while moving, finished flag set at the end. AA07 bytes 16-19 changed by exactly +800 = axis 1 position counter. 0.2 mm excess to be checked in step 8 (pitch 4 vs 5 mm?) |
 | 2026-10-01 | 7 | pass | -1 mm twice: counter -800 each, sensor -1.2 and -0.9 mm |
 | 2026-10-01 | 8 | pass | +10 / -10 mm: counter +-8000, sensor +10.1 / -10.1 mm. 800 pulses/mm (4 mm pitch) confirmed; sensor repeatability about +-0.2 mm |
+| 2026-10-01 | 9 | pass | `focus`: 200.0 -> +22.0 mm move -> 222.4, correction -0.4 -> final 221.8 (error +0.2, within sensor noise). Added median-of-3 readings (focus.samples) afterwards to stop chasing noise |

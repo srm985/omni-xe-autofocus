@@ -4,9 +4,9 @@ Autofocus for the **ComMarker Omni Xe** without ComMarker Studio, so the laser c
 LightBurn. The tool reads the machine's built-in height sensor through the laser controller and moves
 the motorised Z axis to the focus height, using the same rules as ComMarker Studio.
 
-> **Status:** protocol documented and fully covered by unit tests and a simulator, but **not
-> yet tested on real hardware**. Follow [docs/hardware-testing.md](docs/hardware-testing.md) before
-> relying on it.
+> **Status:** working on real hardware (Omni Xe 6W, 2026-10-01): sensor reading, Z moves and full
+> autofocus verified. Still to do: confirm the focus height with a test burn (step 10 in
+> [docs/hardware-testing.md](docs/hardware-testing.md)).
 
 ## Requirements
 

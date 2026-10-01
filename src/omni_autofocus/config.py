@@ -30,6 +30,7 @@ class FocusSettings:
     sensor_min_mm: float = 120.0
     sensor_max_mm: float = 280.0
     max_move_mm: float = 60.0  # safety limit for a single autofocus move
+    samples: int = 3  # sensor readings per measurement (median); one reading wobbles about +-0.2 mm
 
     @property
     def target_mm(self) -> float:

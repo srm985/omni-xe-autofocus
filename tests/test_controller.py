@@ -174,3 +174,19 @@ def test_counter_mismatch_is_an_error():
     with pytest.raises(ControllerError, match="counter moved"):
         ctl.move_axis(config.Settings().z_axis.axis_params(), 800)
     assert cmd_payloads(board)[-1][:4].hex() != "aa100003"  # never left in run state
+
+
+def test_median_height_rejects_an_outlier():
+    class NoisySensor(SimulatedBoard):
+        offsets = [0.0, 0.4, -0.1]
+
+        def _sensor_reply(self, request):
+            real = self.sensor_mm
+            self.sensor_mm = real + self.offsets.pop(0)
+            try:
+                return super()._sensor_reply(request)
+            finally:
+                self.sensor_mm = real
+
+    board, ctl = make(sensor_mm=220.0, board_cls=NoisySensor)
+    assert ctl.read_height_median(3) == pytest.approx(220.0)
