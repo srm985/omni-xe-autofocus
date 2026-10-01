@@ -20,6 +20,8 @@ laser** (both poll the controller continuously). Keep a hand near the power swit
 | 9 | `omni-autofocus focus` | **yes** | ends with `In focus` |
 | 10 | Burn a focus test in LightBurn without touching Z | — | best line at the autofocused height |
 
+| 12 | With LightBurn connected: `status`, `height -n 3`, then use LightBurn | no | both work, LightBurn unaffected |
+| 13 | Focus ladder: burns at 0, −1, −2, +1, +2 mm from autofocus height | **yes** | 0 is sharpest (else set `focus.offset_mm`) |
 | 11 | Create a second LightBurn BSL profile for lens A (70×70), select it, close LightBurn, run `omni-autofocus focus --dry-run` | no | prints "lens A … from last-used LightBurn profile" |
 
 If step 6 moves the wrong way (sensor change ≈ −1 mm): set `invert_direction = true` in `[z_axis]`
@@ -41,3 +43,4 @@ Results log (fill in):
 | 2026-10-01 | 7 | pass | -1 mm twice: counter -800 each, sensor -1.2 and -0.9 mm |
 | 2026-10-01 | 8 | pass | +10 / -10 mm: counter +-8000, sensor +10.1 / -10.1 mm. 800 pulses/mm (4 mm pitch) confirmed; sensor repeatability about +-0.2 mm |
 | 2026-10-01 | 9 | pass | `focus`: 200.0 -> +22.0 mm move -> 222.4, correction -0.4 -> final 221.8 (error +0.2, within sensor noise). Added median-of-3 readings (focus.samples) afterwards to stop chasing noise |
+| 2026-10-01 | 12 | partial | with LightBurn open and connected: `status` and `height -n 3` worked (221.8/221.8/221.7 mm). Board state 3 while LightBurn is connected = run state, so Z moves now restore the run state instead of resetting, and refuse to start while the controller reports unfinished work. LightBurn side still to confirm |

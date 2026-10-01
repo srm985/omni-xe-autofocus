@@ -195,19 +195,28 @@ class Controller:
         """Relative move of one auxiliary axis, mirroring ``MarkControl::doMoveAxisPulse``.
 
         Vendor sequence: reset, 10 ms, run, list [axis move, delay], 5 ms, wait for finish, reset.
-        The controller only executes list commands while in the run state.
+        The controller only executes list commands while in the run state. If another program (e.g.
+        LightBurn) had left the controller in the run state, it is restored after a successful move
+        instead of reset. Refuses to start while the controller reports unfinished work.
 
         Returns the change of the axis position counter (pulses actually executed) when the axis has a
         counter, and raises if it disagrees with the request.
         """
         if pulses == 0:
             return 0
+        initial = self.state()
+        if not initial.finished_flag:
+            raise ControllerError(
+                "the controller is busy or has unfinished work (is a job running in LightBurn?); not moving Z"
+            )
+        restore_run = initial.board_state == commands.BOARD_STATE_RUN
         before = self._axis_position(params.axis_id)
         data = commands.command_list(commands.axis_move_cmd(params, pulses), commands.delay_cmd(1))
         min_duration = commands.estimated_move_seconds(params, pulses)
         self.set_run_state(commands.RUN_STATE_RESET)
         self._sleep(0.01)
         self.set_run_state(commands.RUN_STATE_RUN)
+        completed = False
         try:
             self.wait_cache(len(data) * 2)
             started = self._clock()
@@ -220,8 +229,10 @@ class Controller:
             if remaining > 0:
                 self._sleep(remaining)
             self.wait_axis_stopped(params.axis_id, timeout_s)
+            completed = True
         finally:
-            self.set_run_state(commands.RUN_STATE_RESET)
+            if not (completed and restore_run):
+                self.set_run_state(commands.RUN_STATE_RESET)  # also stops motion after an error
         after = self._axis_position(params.axis_id)
         if before is None or after is None:
             return None

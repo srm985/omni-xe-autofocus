@@ -48,7 +48,7 @@ def test_move_axis_follows_vendor_run_state_sequence():
     board, ctl = make()
     params = config.Settings().z_axis.axis_params()
     ctl.move_axis(params, 800)
-    run_states = [p[:4].hex() for p in cmd_payloads(board) if p[:2] == b"\xaa\x10"]
+    run_states = [p[:4].hex() for p in cmd_payloads(board) if p[:2].hex() == "aa10"]
     assert run_states == ["aa100001", "aa100003", "aa100001"]  # reset, run, ..., reset
     first_data = next(i for i, (ep, _) in enumerate(board.sent_frames) if ep == EP_DATA_OUT)
     run_index = next(i for i, (ep, f) in enumerate(board.sent_frames) if f[6:10].hex() == "aa100003")
@@ -78,9 +78,9 @@ def test_reset_is_sent_even_if_waiting_fails():
     class StuckBoard(SimulatedBoard):
         def _command(self, payload):
             reply = super()._command(payload)
-            if payload[:2] == b"\xaa\x05":
+            if payload[:2] == b"\xaa\x05" and self.running:
                 reply = bytearray(reply)
-                reply[4], reply[12] = 2, 0  # always busy
+                reply[4], reply[12] = 3, 0  # never finishes once the move has started
                 reply = bytes(reply)
             return reply
 
@@ -193,3 +193,23 @@ def test_median_height_rejects_an_outlier():
 
     board, ctl = make(sensor_mm=220.0, board_cls=NoisySensor)
     assert ctl.read_height_median(3) == pytest.approx(220.0)
+
+
+def test_run_state_left_by_another_program_is_restored():
+    board, ctl = make()
+    ctl.set_run_state(commands.RUN_STATE_RUN)  # e.g. LightBurn connected
+    board.sent_frames.clear()
+    ctl.move_axis(config.Settings().z_axis.axis_params(), 800)
+    run_states = [p[:4].hex() for p in cmd_payloads(board) if p[:2].hex() == "aa10"]
+    assert run_states == ["aa100001", "aa100003"]  # no final reset
+    assert board.running
+
+
+def test_refuses_to_move_while_controller_busy():
+    board, ctl = make()
+    params = config.Settings().z_axis.axis_params()
+    ctl.send_list(commands.command_list(commands.axis_move_cmd(params, 800)))  # held: unfinished work
+    board.sent_frames.clear()
+    with pytest.raises(ControllerError, match="busy"):
+        ctl.move_axis(params, 800)
+    assert not any(p[:2].hex() == "aa10" for p in cmd_payloads(board))  # nothing touched

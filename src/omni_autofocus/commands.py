@@ -34,6 +34,9 @@ AXIS_COUNTER_ORIGIN = 0x40000000
 
 RUN_STATE_RUN = 3
 RUN_STATE_RESET = 1
+# AA05 board state while the controller is in the run state (seen during our own moves and while
+# LightBurn is connected; 0 after a reset).
+BOARD_STATE_RUN = 3
 
 MAX_TRANSMIT_LEN = 0xFB
 

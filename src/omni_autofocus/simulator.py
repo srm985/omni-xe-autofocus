@@ -72,7 +72,7 @@ class SimulatedBoard:
         if code == commands.CMD_DEV_STATE:
             reply = bytearray(0x40)
             reply[0:2] = payload[:2]
-            reply[4] = 2 if moving else 0  # board state
+            reply[4] = 3 if self.running else 0  # board state (3 = run state, as on hardware)
             reply[12] = 0 if (moving or self._pending) else 1  # "finished" flag
             reply[13:16] = (1024).to_bytes(3, "big")  # free cache, KiB
             return bytes(reply)
