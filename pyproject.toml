@@ -13,6 +13,7 @@ dependencies = []  # runtime uses only the standard library (ctypes)
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
+build = ["pyinstaller>=6"]  # standalone .exe, see tools/build_exe.ps1
 
 [project.scripts]
 omni-autofocus = "omni_autofocus.cli:main"

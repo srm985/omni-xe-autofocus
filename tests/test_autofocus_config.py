@@ -116,3 +116,14 @@ def test_cli_dry_run_does_not_move(capsys):
 
     assert main(["--simulate", "focus", "--dry-run"]) == 0
     assert "Dry run" in capsys.readouterr().out
+
+
+def test_no_arguments_runs_focus_and_pauses(monkeypatch):
+    from omni_autofocus import cli
+
+    calls = []
+    monkeypatch.setattr(cli.sys, "argv", ["omni-autofocus.exe"])
+    monkeypatch.setattr(cli, "_run", lambda argv: calls.append(argv) or 0)
+    monkeypatch.setattr("builtins.input", lambda prompt="": calls.append("paused"))
+    assert cli.main() == 0
+    assert calls == [["focus"], "paused"]

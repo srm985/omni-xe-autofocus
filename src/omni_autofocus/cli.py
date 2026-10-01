@@ -250,6 +250,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Entry point. With no arguments at all (e.g. the .exe double-clicked) it runs ``focus`` and keeps
+    the console window open until Enter is pressed."""
+    if argv is None and len(sys.argv) == 1:
+        code = _run(["focus"])
+        _pause()
+        return code
+    return _run(argv)
+
+
+def _pause() -> None:
+    try:
+        input("\nPress Enter to close...")
+    except EOFError:
+        pass
+
+
+def _run(argv: list[str] | None) -> int:
     global _SIMULATE
     args = build_parser().parse_args(argv)
     _SIMULATE = args.simulate
