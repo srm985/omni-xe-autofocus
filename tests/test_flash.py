@@ -123,15 +123,36 @@ def test_cli_calibration_command_compares_and_saves(capsys, tmp_path):
 
 
 def test_cli_without_any_calibration_source_refuses(monkeypatch, capsys, tmp_path):
-    from omni_autofocus import cli
+    from omni_autofocus import cli, session
 
-    def no_laser():
+    def no_laser(self):
         raise cli.ControllerError("no device")
 
-    monkeypatch.setattr(cli, "_open_controller", no_laser)
+    monkeypatch.setattr(session.Session, "open", no_laser)
     code = cli.main(["--force", "--config", str(tmp_path / "none.toml"), "--lens", "b", "focus", "--dry-run"])
     assert code == 1
-    assert "no focus calibration found" in capsys.readouterr().err
+    assert "no device" in capsys.readouterr().err
+    assert not (tmp_path / "none.toml").exists()  # no fallback values saved without a laser
+
+
+def test_calibration_falls_back_to_commarker_when_the_store_is_unreadable(monkeypatch, tmp_path):
+    from omni_autofocus import config, session
+
+    monkeypatch.setattr(config, "COMMARKER_DIR", tmp_path / "cm")
+    (tmp_path / "cm" / "config").mkdir(parents=True)
+    cfg = {"lmcPars": {"params": [{"parName": "default", "fBestFocalDistance_B": 219.5}]}}
+    (tmp_path / "cm" / "config" / "lcsparam.cfg").write_bytes(config.encode_commarker_cfg(cfg))
+
+    def unreadable(ctl):
+        raise flash.FlashError("no store")
+
+    monkeypatch.setattr(session, "read_laser_calibration", unreadable)
+    s, source = session.Session(config_path=tmp_path / "x.toml", simulate=True).factory_calibration()
+    assert source == "ComMarker Studio's settings" and s.focus.target_b_mm == 219.5
+
+    monkeypatch.setattr(config, "COMMARKER_DIR", tmp_path / "missing")
+    with pytest.raises(session.ControllerError, match="no focus calibration found"):
+        session.Session(config_path=tmp_path / "x.toml", simulate=True).factory_calibration()
 
 
 def test_qt_compress_roundtrip_and_hardware_header_shape():

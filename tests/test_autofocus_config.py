@@ -130,9 +130,30 @@ def test_no_arguments_runs_focus_and_pauses(monkeypatch):
     calls = []
     monkeypatch.setattr(cli.sys, "argv", ["omni-autofocus.exe"])
     monkeypatch.setattr(cli, "_run", lambda argv: calls.append(argv) or 0)
-    monkeypatch.setattr("builtins.input", lambda prompt="": calls.append("paused"))
+    monkeypatch.setattr(cli, "_owns_console", lambda: True)
+    monkeypatch.setattr(cli, "_pause", lambda code: calls.append(("paused", code)))
     assert cli.main() == 0
-    assert calls == [["focus"], "paused"]
+    assert calls == [["focus"], ("paused", 0)]
+
+
+def test_shortcut_with_arguments_pauses_too_even_on_usage_errors(monkeypatch):
+    from omni_autofocus import cli
+
+    paused = []
+    monkeypatch.setattr(cli.sys, "argv", ["omni-autofocus.exe", "focus", "--bogus"])
+    monkeypatch.setattr(cli, "_owns_console", lambda: True)
+    monkeypatch.setattr(cli, "_pause", paused.append)
+    assert cli.main() == 2
+    assert paused == [2]
+
+
+def test_no_pause_when_run_from_a_terminal(monkeypatch):
+    from omni_autofocus import cli
+
+    monkeypatch.setattr(cli.sys, "argv", ["omni-autofocus", "--simulate", "focus", "--dry-run"])
+    monkeypatch.setattr(cli, "_owns_console", lambda: False)
+    monkeypatch.setattr(cli, "_pause", lambda code: pytest.fail("paused"))
+    assert cli.main() == 0
 
 
 # --- automatic lens selection -------------------------------------------------------------------------

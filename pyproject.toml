@@ -19,8 +19,14 @@ build = ["pyinstaller>=6"]  # standalone .exe, see tools/build_exe.ps1
 [project.scripts]
 omni-autofocus = "omni_autofocus.cli:main"
 
+[project.gui-scripts]
+omni-autofocus-app = "omni_autofocus.app:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+omni_autofocus = ["assets/*.ico"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

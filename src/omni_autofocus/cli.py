@@ -3,50 +3,29 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
-import csv
-import io
+import ctypes
 import logging
-import subprocess
 import sys
 import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
 
-from . import __version__, autofocus, config, flash, lens
+from . import __version__, autofocus, config, session
 from .controller import Controller, ControllerBusyError, ControllerError
 
 log = logging.getLogger("omni_autofocus")
 
-CONFLICTING_PROGRAMS = {"commarker_studio.exe": "ComMarker Studio"}
-WARN_PROGRAMS = {"lightburn.exe": "LightBurn"}
+_SESSION = session.Session()  # replaced in _run() from the command-line options
 
 
-def _running_programs() -> set[str]:
-    if sys.platform != "win32":
-        return set()
+def _check_other_software(force: bool = False) -> None:
     try:
-        out = subprocess.run(
-            ["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=10, check=False
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
-        return set()
-    return {row[0].lower() for row in csv.reader(io.StringIO(out)) if row}
-
-
-def _check_other_software(force: bool) -> None:
-    if _SIMULATE:
-        return
-    running = _running_programs()
-    for exe, name in CONFLICTING_PROGRAMS.items():
-        if exe in running and not force:
-            raise SystemExit(
-                f"{name} is running and talks to the laser constantly. Close it first (or use --force)."
-            )
-    for exe, name in WARN_PROGRAMS.items():
-        if exe in running:
-            print(f"Note: {name} is running. That is fine, but do not start a job until this finishes.")
+        note = _SESSION.check_other_software()
+    except session.ConflictError as e:
+        raise ControllerError(f"{e} (Or use --force.)") from None
+    if note:
+        print(f"Note: {note}")
 
 
 def _confirm(prompt: str, assume_yes: bool) -> bool:
@@ -58,70 +37,27 @@ def _confirm(prompt: str, assume_yes: bool) -> bool:
         return False
 
 
-_SIMULATE = False
-
-
 def _open_controller():
-    if _SIMULATE:
-        from .simulator import FakeClock, SimulatedBoard, factory_flash_image
-
-        board = SimulatedBoard(sensor_mm=205.0, flash_image=factory_flash_image())
-        clock = FakeClock()
-        return contextlib.nullcontext(board), Controller(board, sleep=clock.sleep, clock=clock)
-    from .cyusb import CyUsbDevice  # imported lazily: Windows-only
-
-    dev = CyUsbDevice.open_first()
-    log.info("opened %s", dev.path)
-    return dev, Controller(dev)
+    return _SESSION.open()
 
 
 def _read_laser_calibration(ctl: Controller) -> dict:
-    """The ComMarker parameter file the factory stored in the controller's flash."""
-    return config.decode_commarker_cfg(flash.read_commarker_file(ctl, "lcsparam.cfg"))
-
-
-def _factory_calibration() -> tuple[config.Settings, str]:
-    """Calibration from the laser itself, else from an installed ComMarker Studio."""
-    try:
-        dev, ctl = _open_controller()
-        with dev:
-            return config.from_commarker(_read_laser_calibration(ctl)), "the laser"
-    except (ControllerError, OSError, ValueError, KeyError, IndexError) as e:
-        log.info("could not read the calibration from the laser: %s", e)
-    try:
-        return config.load_commarker(config.COMMARKER_DIR), "ComMarker Studio's settings"
-    except (OSError, ValueError, KeyError, IndexError) as e:
-        log.info("no ComMarker Studio settings: %s", e)
-    raise ControllerError(
-        "no focus calibration found: the laser's stored calibration could not be read and ComMarker "
-        "Studio is not installed. Run 'omni-autofocus config init', then enter the focus heights from "
-        "the card that came with the machine as focus.target_a_mm / focus.target_b_mm."
-    )
+    return session.read_laser_calibration(ctl)
 
 
 def _settings(args, *, calibrate: bool = False) -> config.Settings:
-    """Settings from the file. With ``calibrate``, a missing file is first created from the factory
-    calibration (laser, then ComMarker Studio) so built-in example values are never used silently."""
-    path = config.settings_path(Path(args.config) if args.config else None)
-    if calibrate and not path.exists():
-        s, source = _factory_calibration()
-        config.save(s, path)
-        print(f"First run: saved the factory calibration from {source} to {path}")
-    s = config.load(path)
-    if args.lens:
-        s = replace(s, focus=replace(s.focus, lens=args.lens))
+    """Settings from the file; with ``calibrate`` a missing file is created from the factory calibration."""
+    s, note = _SESSION.settings(calibrate=calibrate)
+    if note:
+        print(note)
     return s
 
 
 def _settings_with_lens(args) -> config.Settings:
     """Settings with the lens resolved (explicit, LightBurn, then ComMarker); prints the choice."""
-    s = _settings(args, calibrate=True)
-    try:
-        s, why = lens.resolve(s)
-    except lens.LensError:
-        if not _SIMULATE:
-            raise
-        s, why = replace(s, focus=replace(s.focus, lens="b")), "lens B (simulation default)"
+    s, why, note = _SESSION.settings_with_lens()
+    if note:
+        print(note)
     print(f"Using {why}: focus at sensor reading {s.focus.target_mm:.1f} mm")
     return s
 
@@ -139,6 +75,14 @@ def cmd_devices(args) -> int:
     for d in devices:
         print(("[supported] " if d.supported else "[other]     ") + d.path)
     return 0
+
+
+def cmd_app(args) -> int:
+    """Open the Omni Autofocus window (Autofocus button and hotkey)."""
+    from .app import main as app_main
+
+    argv = ["--config", args.config] if args.config else []
+    return app_main(argv + (["--simulate"] if args.simulate else []))
 
 
 def cmd_driver(args) -> int:
@@ -238,38 +182,38 @@ def cmd_focus(args) -> int:
 
 
 def _autofocus(ctl: Controller, s: config.Settings, *, passes: int, dry_run: bool, yes: bool) -> int:
-    for iteration in range(1, passes + 1):
-        height = ctl.read_height_median(s.focus.samples)
-        try:
-            p = autofocus.plan(height, s)
-        except autofocus.FocusError as e:
-            print(f"Error: {e}")
-            return 2
+    def show(iteration: int, p: autofocus.FocusPlan) -> None:
         print(
             f"pass {iteration}: sensor {p.height_mm:.3f} mm, target {p.target_mm:.3f} mm, "
             f"move {p.move_mm:+.3f} mm ({p.pulses:+d} pulses)"
         )
-        if not p.needed:
-            print(f"In focus (error {p.target_mm - p.height_mm:+.3f} mm).")
-            return 0
-        if dry_run:
-            print("Dry run: not moving.")
-            return 0
-        if iteration == 1 and not _confirm("Move the Z axis now?", yes):
-            print("Cancelled.")
-            return 1
-        ctl.move_axis(s.z_axis.axis_params(), p.pulses)
-    height = ctl.read_height_median(s.focus.samples)
-    error = s.focus.target_mm - height
-    print(f"final: sensor {height:.3f} mm, error {error:+.3f} mm")
-    if abs(error) > FOCUS_TOLERANCE_MM:
-        print(f"Warning: still {error:+.2f} mm from focus. Check the Z axis and run focus again.")
+
+    try:
+        result = autofocus.run(
+            ctl,
+            s,
+            passes=passes,
+            dry_run=dry_run,
+            confirm=lambda p: _confirm("Move the Z axis now?", yes),
+            on_plan=show,
+        )
+    except autofocus.FocusError as e:
+        print(f"Error: {e}")
+        return 2
+    if result.outcome is autofocus.Outcome.DRY_RUN:
+        print("Dry run: not moving.")
+        return 0
+    if result.outcome is autofocus.Outcome.CANCELLED:
+        print("Cancelled.")
+        return 1
+    if len(result.plans) and not result.plans[-1].needed:
+        print(f"In focus (error {result.error_mm:+.3f} mm).")
+        return 0
+    print(f"final: sensor {result.height_mm:.3f} mm, error {result.error_mm:+.3f} mm")
+    if result.outcome is autofocus.Outcome.NOT_CONVERGED:
+        print(f"Warning: still {result.error_mm:+.2f} mm from focus. Check the Z axis and run focus again.")
         return 3
     return 0
-
-
-# Sensor readings wobble about +-0.2 mm, so a final error up to this counts as focused.
-FOCUS_TOLERANCE_MM = 0.5
 
 
 def _parse_offsets(text: str) -> list[float]:
@@ -563,6 +507,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("devices", help="list controllers on the CYUSB driver").set_defaults(func=cmd_devices)
 
+    sub.add_parser("app", help="open the Autofocus window (button + hotkey)").set_defaults(func=cmd_app)
+
     sp = sub.add_parser("driver", help="check the laser's USB driver and help install it")
     sp.add_argument("-y", "--yes", action="store_true", help="run a found driver installer without asking")
     sp.set_defaults(func=cmd_driver)
@@ -623,29 +569,65 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point. With no arguments at all (e.g. the .exe double-clicked) it runs ``focus`` and keeps
-    the console window open until Enter is pressed."""
-    if argv is None and len(sys.argv) == 1:
-        code = _run(["focus"])
-        _pause()
-        return code
-    return _run(argv)
-
-
-def _pause() -> None:
+    """Entry point. With no arguments (e.g. the .exe double-clicked) it runs ``focus``. When the tool
+    has its own console window (double-click or a shortcut), the window stays open long enough to read
+    the result: a few seconds after success, until Enter after a problem."""
+    if argv is not None:
+        return _run(argv)
     try:
-        input("\nPress Enter to close...")
-    except EOFError:
+        code = _run(sys.argv[1:] or ["focus"])
+    except SystemExit as e:  # argparse errors and --help/--version
+        code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+    if _owns_console():
+        _pause(code)
+    return code
+
+
+AUTO_CLOSE_SECONDS = 5
+
+
+def _owns_console() -> bool:
+    """True when no shell shares our console, i.e. Windows opened the window just for us.
+
+    A PyInstaller one-file .exe runs as two processes (bootloader and Python), so two is still ours.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        ids = (ctypes.c_uint32 * 4)()
+        count = ctypes.windll.kernel32.GetConsoleProcessList(ids, 4)
+    except (AttributeError, OSError):
+        return False
+    return 0 < count <= (2 if getattr(sys, "frozen", False) else 1)
+
+
+def _pause(code: int) -> None:
+    try:
+        if code == 0:
+            import msvcrt
+
+            print(f"\nDone. This window closes in {AUTO_CLOSE_SECONDS} s (press any key to close now).")
+            deadline = time.monotonic() + AUTO_CLOSE_SECONDS
+            while time.monotonic() < deadline and not msvcrt.kbhit():
+                time.sleep(0.05)
+        else:
+            input("\nPress Enter to close...")
+    except (EOFError, ImportError, OSError):
         pass
 
 
-def _run(argv: list[str] | None) -> int:
-    global _SIMULATE
+def _run(argv: list[str]) -> int:
+    global _SESSION
     args = build_parser().parse_args(argv)
-    _SIMULATE = args.simulate
-    if _SIMULATE and not args.config:
+    if args.simulate and not args.config:
         # Never let the simulator's calibration or test runs touch the real settings file.
         args.config = str(Path(tempfile.gettempdir()) / "omni-autofocus-simulate.toml")
+    _SESSION = session.Session(
+        config_path=Path(args.config) if args.config else None,
+        lens_override=args.lens,
+        simulate=args.simulate,
+        force=args.force,
+    )
     level = logging.WARNING if args.verbose == 0 else logging.INFO if args.verbose == 1 else logging.DEBUG
     logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
     try:

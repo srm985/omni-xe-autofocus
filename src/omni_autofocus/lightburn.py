@@ -57,7 +57,7 @@ def omni_device(prefs: dict) -> tuple[LightBurnDevice | None, str]:
     if active is not None and active.is_bsl:
         return active, f"last-used LightBurn profile '{active.name}'"
     if len(bsl) == 1:
-        return bsl[0], f"LightBurn profile '{bsl[0].name}' (the only BSL profile)"
+        return bsl[0], f"the only BSL profile in LightBurn, '{bsl[0].name}'"
     if not bsl:
         return None, "no BSL device profile in LightBurn"
     return None, "several BSL profiles in LightBurn and the last-used one is not BSL"

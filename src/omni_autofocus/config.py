@@ -70,9 +70,24 @@ class ZAxisSettings:
 
 
 @dataclass(frozen=True)
+class AppSettings:
+    """The Omni Autofocus app (the button bar). The command line ignores these."""
+
+    hotkey: str = "ctrl+alt+f"  # global shortcut for Autofocus; "" turns it off
+    sounds: bool = True  # a short system sound when autofocus finishes (handy with the hotkey)
+    # One-click autofocus moves without asking, except a downward move (towards the work) larger
+    # than this. Upward moves only take the head away from the work.
+    confirm_down_above_mm: float = 10.0
+
+
+@dataclass(frozen=True)
 class Settings:
     focus: FocusSettings = field(default_factory=FocusSettings)
     z_axis: ZAxisSettings = field(default_factory=ZAxisSettings)
+    app: AppSettings = field(default_factory=AppSettings)
+
+
+SECTIONS = ("focus", "z_axis", "app")
 
 
 def _apply(section_cls, data: dict, where: str):
@@ -98,21 +113,22 @@ def load(path: Path | None = None) -> Settings:
         return Settings()  # a not-yet-created settings file means defaults
     with open(path, "rb") as f:
         data = tomllib.load(f)
-    unknown = set(data) - {"focus", "z_axis"}
+    unknown = set(data) - set(SECTIONS)
     if unknown:
         raise ValueError(f"unknown section(s): {', '.join(sorted(unknown))}")
     return Settings(
         focus=_apply(FocusSettings, data.get("focus", {}), "focus"),
         z_axis=_apply(ZAxisSettings, data.get("z_axis", {}), "z_axis"),
+        app=_apply(AppSettings, data.get("app", {}), "app"),
     )
 
 
 def set_value(settings: Settings, dotted_key: str, text: str) -> Settings:
     """Return ``settings`` with ``section.key`` set from ``text``, converted to the field's type."""
     section_name, _, key = dotted_key.partition(".")
-    sections = {"focus": settings.focus, "z_axis": settings.z_axis}
+    sections = {name: getattr(settings, name) for name in SECTIONS}
     if section_name not in sections or not key:
-        raise ValueError(f"unknown setting {dotted_key!r}: use focus.<key> or z_axis.<key>")
+        raise ValueError(f"unknown setting {dotted_key!r}: use focus.<key>, z_axis.<key> or app.<key>")
     section = sections[section_name]
     if key not in {f.name for f in fields(section)}:
         known = ", ".join(f.name for f in fields(section))
@@ -130,6 +146,8 @@ def set_value(settings: Settings, dotted_key: str, text: str) -> Settings:
         value = text
     if dotted_key == "focus.lens" and str(value).lower() not in ("auto", "a", "b"):
         raise ValueError("focus.lens must be auto, a or b")
+    if dotted_key == "app.hotkey" and value:
+        parse_hotkey(str(value))  # raises ValueError if malformed
     return replace(settings, **{section_name: replace(section, **{key: value})})
 
 
@@ -147,7 +165,8 @@ def dumps(settings: Settings) -> str:
         "# Sensor distances are what the height sensor reads, not lens-to-surface distances.",
         "",
     ]
-    for name, section in (("focus", settings.focus), ("z_axis", settings.z_axis)):
+    for name in SECTIONS:
+        section = getattr(settings, name)
         out.append(f"[{name}]")
         out.extend(f"{k} = {_toml_value(v)}" for k, v in asdict(section).items())
         out.append("")
@@ -157,6 +176,30 @@ def dumps(settings: Settings) -> str:
 def save(settings: Settings, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(dumps(settings), encoding="utf-8")
+
+
+_MODIFIERS = {"alt": 0x1, "ctrl": 0x2, "control": 0x2, "shift": 0x4, "win": 0x8}
+_NAMED_KEYS = {f"f{i}": 0x6F + i for i in range(1, 13)} | {"space": 0x20, "home": 0x24, "end": 0x23}
+
+
+def parse_hotkey(text: str) -> tuple[int, int]:
+    """``"ctrl+alt+f"`` -> (Windows MOD_* flags, virtual-key code). Needs at least one modifier."""
+    parts = [p.strip().lower() for p in text.split("+") if p.strip()]
+    if len(parts) < 2:
+        raise ValueError(f"hotkey {text!r} needs a modifier and a key, like ctrl+alt+f")
+    mods = 0
+    for p in parts[:-1]:
+        if p not in _MODIFIERS:
+            raise ValueError(f"unknown modifier {p!r} in hotkey {text!r} (use ctrl, alt, shift, win)")
+        mods |= _MODIFIERS[p]
+    key = parts[-1]
+    if len(key) == 1 and key.isalnum():
+        vk = ord(key.upper())
+    elif key in _NAMED_KEYS:
+        vk = _NAMED_KEYS[key]
+    else:
+        raise ValueError(f"unknown key {key!r} in hotkey {text!r} (use a letter, digit or F1-F12)")
+    return mods, vk
 
 
 # --- ComMarker Studio import -------------------------------------------------------------------------
@@ -214,7 +257,7 @@ def from_commarker(param_cfg: dict, base: Settings | None = None) -> Settings:
             run_speed=float(r["runSpeed"]),
             acc_speed=float(r["accSpeed"]),
         )
-    return Settings(focus=focus, z_axis=z)
+    return Settings(focus=focus, z_axis=z, app=base.app)
 
 
 def read_commarker_cfg(install_dir: Path = COMMARKER_DIR) -> dict:
