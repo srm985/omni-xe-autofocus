@@ -33,3 +33,5 @@ Results log (fill in):
 | 2026-10-01 | 3 | partial | AAC1 pass-through and Modbus confirmed: request answered, collect returned `01 04 04 7f ff ff ff d3 d0` (valid CRC) = sensor "no target" value. Need a surface within range to get a real distance |
 | 2026-10-01 | 3 | pass | with a surface under the head: 237.500 mm, identical over 10 readings (no jitter at all; sensor resolution may be coarse, check in step 4) |
 | 2026-10-01 | 4 | pass | 36.5 mm block: 237.500 → 201.000 mm, difference exactly 36.5 mm. Units are mm, scale correct. Readings so far land on 0.5 mm steps |
+| 2026-10-01 | 5 | pass | dry run planned +21.100 mm from 200.900 mm (so resolution is at least 0.1 mm, not 0.5) |
+| 2026-10-01 | 6 | fail | list acked (`FA 01`) but Z did not move. Cause: the tool never put the board in the run state (`AA10 00 03`); AA05 byte 12 went 01 -> 00 (list held). Fixed by mirroring `MarkControl::doMoveAxisPulse` (reset, run, list, wait, reset) |
