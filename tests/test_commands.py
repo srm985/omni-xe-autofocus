@@ -107,6 +107,18 @@ def test_mm_to_pulses():
     assert Z_AXIS.mm_to_pulses(-2.5) == -2000
 
 
+def test_run_state_and_delay_encoding():
+    assert commands.run_state_cmd(commands.RUN_STATE_RUN) == bytes.fromhex("aa 10 00 03") + bytes(8)
+    assert commands.run_state_cmd(commands.RUN_STATE_RESET) == bytes.fromhex("aa 10 00 01") + bytes(8)
+    assert commands.delay_cmd(1) == bytes.fromhex("0a 00 08 00 00 00 00 02")
+
+
+def test_estimated_move_seconds():
+    # 0 -> 8 mm/s at 5 mm/s^2: ramps take 1.6 s and 6.4 mm each.
+    assert commands.estimated_move_seconds(Z_AXIS, 800 * 20) == pytest.approx(2 * 1.6 + (20 - 12.8) / 8)
+    assert commands.estimated_move_seconds(Z_AXIS, 800) == pytest.approx(2 * (5**0.5) / 5)  # triangular
+
+
 def test_dev_state_parsing():
     reply = bytearray(0x40)
     reply[0:2] = b"\xaa\x05"
@@ -126,3 +138,12 @@ def test_ext_state_axis_nibbles():
     reply[0x29] = 0x01
     ext = commands.parse_dev_ext_state(bytes(reply))
     assert not ext.axis_moving(0) and ext.axis_moving(1) and ext.axis_moving(2)
+
+
+def test_dev_state_hardware_vectors():
+    # Captured 2026-10-01: idle with nothing queued, then with an unexecuted list queued.
+    idle = bytes.fromhex("aa 05 00 00 00 00 00 00 00 00 00 00 01 00 7f ff ff fc 3f ff 03") + bytes(11)
+    queued = bytes.fromhex("aa 05 00 00 00 00 00 00 00 00 00 00 00 00 7f ff ff fc 3f ff 03") + bytes(11)
+    a, b = commands.parse_dev_state(idle), commands.parse_dev_state(queued)
+    assert a.finished_flag and not b.finished_flag
+    assert a.board_state == b.board_state == 0 and a.free_cache_kb == 32767

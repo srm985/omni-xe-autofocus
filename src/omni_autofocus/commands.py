@@ -27,6 +27,11 @@ CMD_DATA_TRANSMIT = 0xAAC1  # RS-485 pass-through ("setDataTransmit2")
 CMD_AXIS_MOVE_01 = 0x03A0  # list command: move axes 0/1
 CMD_AXIS_MOVE_23 = 0x03A1  # list command: move axes 2/3
 CMD_MOVE_TO_REL = 0x0242  # list command: relative galvo move (used as a list terminator after axis moves)
+CMD_SET_RUN_STATE = 0xAA10  # immediate: param 3 = run (execute lists), param 1 = reset/stop
+CMD_DELAY = 0x0A00  # list command: delay
+
+RUN_STATE_RUN = 3
+RUN_STATE_RESET = 1
 
 MAX_TRANSMIT_LEN = 0xFB
 
@@ -39,6 +44,16 @@ def lcs_cmd(code: int, data: bytes = b"", flag: int = 0) -> bytes:
 def status_cmd(code: int) -> bytes:
     """The fixed 12-byte form used by state queries."""
     return struct.pack(">H", code) + bytes(10)
+
+
+def run_state_cmd(state: int) -> bytes:
+    """``Executor7::setRun`` (state 3) / ``setReset`` (state 1): 12-byte form with a BE u16 at offset 2."""
+    return struct.pack(">HH", CMD_SET_RUN_STATE, state) + bytes(8)
+
+
+def delay_cmd(time_units: int = 1) -> bytes:
+    """``sendDelayTime(n)`` list command; the vendor encodes ``2 * n``."""
+    return lcs_cmd(CMD_DELAY, struct.pack(">I", 2 * time_units))
 
 
 def data_transmit(payload: bytes, flag: int = 0) -> bytes:
@@ -181,6 +196,21 @@ def axis_move_cmd(params: AxisParams, pulses: int) -> bytes:
     return lcs_cmd(code, data)
 
 
+def estimated_move_seconds(params: AxisParams, pulses: int) -> float:
+    """Rough duration of a trapezoidal move, used only as a lower bound when waiting."""
+    ppm = params.pulses_per_mm
+    run = min(max(params.run_speed, params.start_speed), params.max_run_speed)
+    if run <= 0 or ppm <= 0:
+        return 0.0
+    distance_mm = abs(pulses) / ppm
+    accel_time = (run - params.start_speed) / params.acc_speed if params.acc_speed > 0 else 0.0
+    accel_dist = (params.start_speed + run) * accel_time / 2
+    if 2 * accel_dist >= distance_mm:  # triangular profile
+        peak = math.sqrt(params.start_speed**2 + params.acc_speed * distance_mm)
+        return 2 * (peak - params.start_speed) / params.acc_speed
+    return 2 * accel_time + (distance_mm - 2 * accel_dist) / run
+
+
 def move_to_rel_cmd(x: int = 0, y: int = 0, a: int = 0, b: int = 1) -> bytes:
     """``sendMoveToRel``; the vendor appends ``move_to_rel_cmd()`` after every axis move."""
     if a == 0 and (x or y):
@@ -207,11 +237,17 @@ def command_list(*cmds: bytes) -> bytes:
 class DevState:
     board_state: int
     free_cache_kb: int
+    finished_flag: bool  # status byte 0x0A bit 0; the vendor's waitForFinish treats it as "done"
     raw: bytes
 
     @property
     def idle(self) -> bool:
         return self.board_state <= 1
+
+    @property
+    def finished(self) -> bool:
+        """The vendor's ``Executor::waitForFinish`` exit condition."""
+        return self.finished_flag or self.idle
 
 
 def parse_dev_state(reply: bytes) -> DevState:
@@ -221,6 +257,7 @@ def parse_dev_state(reply: bytes) -> DevState:
     return DevState(
         board_state=g(2),
         free_cache_kb=(g(0xB) << 16) | (g(0xC) << 8) | g(0xD),
+        finished_flag=bool(g(0xA) & 1),
         raw=bytes(reply),
     )
 

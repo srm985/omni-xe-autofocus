@@ -1,7 +1,9 @@
 """A simulated controller speaking the same framed protocol, for tests and hardware-free development.
 
-It models only what this tool uses: state queries, the RS-485 height sensor and auxiliary axis moves.
-The simulated sensor reading changes by +1 mm for every +1 mm of commanded Z move.
+It models only what this tool uses: state queries, the RS-485 height sensor, the run/reset state and
+auxiliary axis moves. As observed on hardware, list commands sent while the board is not in the run
+state are held (status byte 0x0A bit 0 drops to 0) instead of executed; the simulator assumes a reset
+discards them. The simulated sensor reading changes by +1 mm for every +1 mm of commanded Z move.
 """
 
 from __future__ import annotations
@@ -29,6 +31,8 @@ class SimulatedBoard:
         self.z_reverse = z_reverse
         self.moving_polls = moving_polls
         self._moving = 0
+        self.running = False
+        self._pending: list[bytes] = []
         self._rx = b""
         self._queues: dict[int, deque[bytes]] = {EP_CMD_IN: deque(), EP_DATA_IN: deque()}
         self.sent_frames: list[tuple[int, bytes]] = []
@@ -68,6 +72,7 @@ class SimulatedBoard:
             reply = bytearray(0x40)
             reply[0:2] = payload[:2]
             reply[4] = 2 if moving else 0  # board state
+            reply[12] = 0 if (moving or self._pending) else 1  # "finished" flag
             reply[13:16] = (1024).to_bytes(3, "big")  # free cache, KiB
             return bytes(reply)
         if code == commands.CMD_DEV_EXT_STATE:
@@ -76,6 +81,17 @@ class SimulatedBoard:
             nibble_shift = 4 if self.z_axis_id % 2 else 0
             reply[0x28 + self.z_axis_id // 2] = moving << nibble_shift
             return bytes(reply)
+        if code == commands.CMD_SET_RUN_STATE:
+            state = struct.unpack(">H", payload[2:4])[0]
+            if state == commands.RUN_STATE_RUN:
+                self.running = True
+                pending, self._pending = self._pending, []
+                for data in pending:
+                    self._execute(data)
+            elif state == commands.RUN_STATE_RESET:
+                self.running = False
+                self._pending.clear()
+            return payload[:2] + bytes(10)
         if code == commands.CMD_DATA_TRANSMIT:
             length = payload[2] - 4
             out = payload[4 : 4 + length]
@@ -95,6 +111,12 @@ class SimulatedBoard:
 
     def _list(self, data: bytes) -> None:
         self.lists.append(bytes(data))
+        if self.running:
+            self._execute(data)
+        else:
+            self._pending.append(bytes(data))
+
+    def _execute(self, data: bytes) -> None:
         i = 0
         while i + 4 <= len(data):
             code = struct.unpack(">H", data[i : i + 2])[0]
@@ -115,3 +137,16 @@ class SimulatedBoard:
             mm = counts[slot] / self.z_pulses_per_mm
             self.sensor_mm += mm if positive else -mm
             self._moving = self.moving_polls
+
+
+class FakeClock:
+    """Deterministic clock/sleep pair so simulated runs and tests never really wait."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def sleep(self, seconds: float) -> None:
+        self.now += max(0.0, seconds)
+
+    def __call__(self) -> float:
+        return self.now

@@ -179,15 +179,35 @@ class Controller:
 
     # -- motion -----------------------------------------------------------------------------------
 
-    def move_axis(
-        self, params: AxisParams, pulses: int, *, wait: bool = True, timeout_s: float = 120.0
-    ) -> None:
-        """Relative move of one auxiliary axis, same command sequence as the vendor's ``moveAxis``."""
+    def set_run_state(self, state: int) -> None:
+        reply = self.command(commands.run_state_cmd(state))
+        if len(reply) >= 3 and reply[2] != 0:
+            raise ControllerError(f"controller rejected run state {state} (status {reply[2]})")
+
+    def move_axis(self, params: AxisParams, pulses: int, *, timeout_s: float = 120.0) -> None:
+        """Relative move of one auxiliary axis, mirroring ``MarkControl::doMoveAxisPulse``.
+
+        Vendor sequence: reset, 10 ms, run, list [axis move, delay], 5 ms, wait for finish, reset.
+        The controller only executes list commands while in the run state.
+        """
         if pulses == 0:
             return
-        data = commands.command_list(commands.axis_move_cmd(params, pulses), commands.move_to_rel_cmd())
-        self.wait_cache(len(data) * 2)
-        self.send_list(data)
-        if wait:
-            self.wait_idle(timeout_s)
+        data = commands.command_list(commands.axis_move_cmd(params, pulses), commands.delay_cmd(1))
+        min_duration = commands.estimated_move_seconds(params, pulses)
+        self.set_run_state(commands.RUN_STATE_RESET)
+        self._sleep(0.01)
+        self.set_run_state(commands.RUN_STATE_RUN)
+        try:
+            self.wait_cache(len(data) * 2)
+            started = self._clock()
+            self.send_list(data)
+            self._sleep(0.005)
+            self._poll(lambda: self.state().finished, "the move to finish", timeout_s, 0.005)
+            # The vendor relies on waitForFinish alone; also wait out the expected travel time so the
+            # final reset can never cut a move short, then check the axis' moving flag.
+            remaining = started + min_duration + 0.1 - self._clock()
+            if remaining > 0:
+                self._sleep(remaining)
             self.wait_axis_stopped(params.axis_id, timeout_s)
+        finally:
+            self.set_run_state(commands.RUN_STATE_RESET)

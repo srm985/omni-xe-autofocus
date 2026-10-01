@@ -62,10 +62,10 @@ _SIMULATE = False
 
 def _open_controller():
     if _SIMULATE:
-        from .simulator import SimulatedBoard
+        from .simulator import FakeClock, SimulatedBoard
 
-        board = SimulatedBoard(sensor_mm=205.0)
-        return contextlib.nullcontext(board), Controller(board, sleep=lambda s: None)
+        board, clock = SimulatedBoard(sensor_mm=205.0), FakeClock()
+        return contextlib.nullcontext(board), Controller(board, sleep=clock.sleep, clock=clock)
     from .cyusb import CyUsbDevice  # imported lazily: Windows-only
 
     dev = CyUsbDevice.open_first()
