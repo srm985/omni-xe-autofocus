@@ -174,30 +174,98 @@ def cmd_focus(args) -> int:
     s = _settings_with_lens(args)
     dev, ctl = _open_controller()
     with dev:
-        for iteration in range(1, args.passes + 1):
-            height = ctl.read_height_median(s.focus.samples)
-            try:
-                p = autofocus.plan(height, s)
-            except autofocus.FocusError as e:
-                print(f"Error: {e}")
-                return 2
-            print(
-                f"pass {iteration}: sensor {p.height_mm:.3f} mm, target {p.target_mm:.3f} mm, "
-                f"move {p.move_mm:+.3f} mm ({p.pulses:+d} pulses)"
-            )
-            if not p.needed:
-                print(f"In focus (error {p.target_mm - p.height_mm:+.3f} mm).")
-                return 0
-            if args.dry_run:
-                print("Dry run: not moving.")
-                return 0
-            if iteration == 1 and not _confirm("Move the Z axis now?", args.yes):
-                print("Cancelled.")
-                return 1
-            ctl.move_axis(s.z_axis.axis_params(), p.pulses)
-        final = autofocus.plan(ctl.read_height_median(s.focus.samples), s)
-        print(f"final: sensor {final.height_mm:.3f} mm, error {final.target_mm - final.height_mm:+.3f} mm")
+        return _autofocus(ctl, s, passes=args.passes, dry_run=args.dry_run, yes=args.yes)
+
+
+def _autofocus(ctl: Controller, s: config.Settings, *, passes: int, dry_run: bool, yes: bool) -> int:
+    for iteration in range(1, passes + 1):
+        height = ctl.read_height_median(s.focus.samples)
+        try:
+            p = autofocus.plan(height, s)
+        except autofocus.FocusError as e:
+            print(f"Error: {e}")
+            return 2
+        print(
+            f"pass {iteration}: sensor {p.height_mm:.3f} mm, target {p.target_mm:.3f} mm, "
+            f"move {p.move_mm:+.3f} mm ({p.pulses:+d} pulses)"
+        )
+        if not p.needed:
+            print(f"In focus (error {p.target_mm - p.height_mm:+.3f} mm).")
+            return 0
+        if dry_run:
+            print("Dry run: not moving.")
+            return 0
+        if iteration == 1 and not _confirm("Move the Z axis now?", yes):
+            print("Cancelled.")
+            return 1
+        ctl.move_axis(s.z_axis.axis_params(), p.pulses)
+    final = autofocus.plan(ctl.read_height_median(s.focus.samples), s)
+    print(f"final: sensor {final.height_mm:.3f} mm, error {final.target_mm - final.height_mm:+.3f} mm")
     return 0
+
+
+def _parse_offsets(text: str) -> list[float]:
+    try:
+        offsets = [float(x) for x in text.split(",") if x.strip()]
+    except ValueError as e:
+        raise ValueError(f"bad --offsets {text!r}: use comma-separated mm values like 0,-1,1") from e
+    if not offsets:
+        raise ValueError("--offsets is empty")
+    return offsets
+
+
+def cmd_focus_ladder(args) -> int:
+    """Autofocus, then step Z through offsets so a test mark can be burned at each height."""
+    _check_other_software(args.force)
+    s = _settings_with_lens(args)
+    offsets = _parse_offsets(args.offsets)
+    params = s.z_axis.axis_params()
+    if max(abs(o) for o in offsets) > s.focus.max_move_mm:
+        print(f"Offsets exceed the safety limit of {s.focus.max_move_mm:g} mm.")
+        return 2
+    print("Focus ladder: autofocus, then Z offsets " + ", ".join(f"{o:+g}" for o in offsets) + " mm.")
+    print("At each step, burn a small test mark in LightBurn at a new spot, then come back here.")
+    if not _confirm("Start (this moves the Z axis)?", args.yes):
+        print("Cancelled.")
+        return 1
+    dev, ctl = _open_controller()
+    with dev:
+        code = _autofocus(ctl, s, passes=2, dry_run=False, yes=True)
+        if code:
+            return code
+        current = 0.0
+        burned: list[float] = []
+        try:
+            for offset in offsets:
+                step = offset - current
+                if step:
+                    ctl.move_axis(params, params.mm_to_pulses(step))
+                    current = offset
+                answer = _prompt(
+                    f"\nZ is at {offset:+g} mm. Burn the mark labelled '{offset:+g}', "
+                    "then press Enter (q + Enter to stop): "
+                )
+                if answer.strip().lower() == "q":
+                    break
+                burned.append(offset)
+        finally:
+            if current:
+                print(f"Returning Z to the autofocus height ({-current:+g} mm).")
+                ctl.move_axis(params, params.mm_to_pulses(-current))
+    if burned:
+        print("\nDone. Compare the marks (a loupe or phone macro photo helps) and pick the sharpest.")
+        print("If the sharpest is not '+0', add its label to focus.offset_mm in the settings file")
+        print(
+            f"(currently {s.focus.offset_mm:g}; e.g. '+1' sharpest -> offset_mm = {s.focus.offset_mm + 1:g})."
+        )
+    return 0
+
+
+def _prompt(text: str) -> str:
+    try:
+        return input(text)
+    except EOFError:
+        return "q"
 
 
 def cmd_config(args) -> int:
@@ -254,6 +322,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
     sp.add_argument("--passes", type=int, default=2, help="measure/move iterations (default 2)")
     sp.set_defaults(func=cmd_focus)
+
+    sp = sub.add_parser(
+        "focus-ladder", help="autofocus, then step Z for test burns (find the sharpest height)"
+    )
+    sp.add_argument("--offsets", default="0,-1,-2,1,2", help="Z offsets in mm (default 0,-1,-2,1,2)")
+    sp.add_argument("-y", "--yes", action="store_true", help="do not ask before starting")
+    sp.set_defaults(func=cmd_focus_ladder)
 
     sp = sub.add_parser("config", help="manage the settings file")
     sp.add_argument("action", choices=["show", "init", "path"])

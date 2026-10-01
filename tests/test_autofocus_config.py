@@ -207,3 +207,24 @@ def json_copy(obj):
     import json
 
     return json.loads(json.dumps(obj))
+
+
+def test_cli_focus_ladder_visits_offsets_and_returns(monkeypatch, capsys):
+    from omni_autofocus import cli
+
+    prompts = []
+    monkeypatch.setattr(cli, "_prompt", lambda text: prompts.append(text) or "")
+    assert cli.main(["--simulate", "--lens", "b", "focus-ladder", "--yes"]) == 0
+    out = capsys.readouterr().out
+    labels = [p.split("labelled '")[1].split("'")[0] for p in prompts]
+    assert labels == ["+0", "-1", "-2", "+1", "+2"]
+    assert "Returning Z to the autofocus height (-2 mm)" in out
+
+
+def test_cli_focus_ladder_stop_early_still_returns(monkeypatch, capsys):
+    from omni_autofocus import cli
+
+    answers = iter(["", "q"])
+    monkeypatch.setattr(cli, "_prompt", lambda text: next(answers))
+    assert cli.main(["--simulate", "--lens", "b", "focus-ladder", "--yes", "--offsets", "0,-1,-2"]) == 0
+    assert "Returning Z to the autofocus height (+1 mm)" in capsys.readouterr().out

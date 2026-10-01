@@ -21,7 +21,7 @@ laser** (both poll the controller continuously). Keep a hand near the power swit
 | 10 | Burn a focus test in LightBurn without touching Z | — | best line at the autofocused height |
 
 | 12 | With LightBurn connected: `status`, `height -n 3`, then use LightBurn | no | both work, LightBurn unaffected |
-| 13 | Focus ladder: burns at 0, −1, −2, +1, +2 mm from autofocus height | **yes** | 0 is sharpest (else set `focus.offset_mm`) |
+| 13 | `omni-autofocus focus-ladder`: burns at 0, −1, −2, +1, +2 mm from autofocus height | **yes** | 0 is sharpest (else set `focus.offset_mm`) |
 | 11 | Create a second LightBurn BSL profile for lens A (70×70), select it, close LightBurn, run `omni-autofocus focus --dry-run` | no | prints "lens A … from last-used LightBurn profile" |
 
 If step 6 moves the wrong way (sensor change ≈ −1 mm): set `invert_direction = true` in `[z_axis]`

@@ -23,6 +23,7 @@ safety and accuracy improvements.
 ```bash
 omni-autofocus focus                # measure, confirm, move Z, re-check (the default when double-clicked)
 omni-autofocus focus --dry-run      # only show the planned move
+omni-autofocus focus-ladder         # calibrate: autofocus, then pause at Z -2..+2 mm for test burns
 omni-autofocus height -n 5          # read the sensor (no motion)
 omni-autofocus move-z 2.5           # relative Z move in mm (positive = larger sensor reading)
 omni-autofocus status               # controller state and Z position counter
