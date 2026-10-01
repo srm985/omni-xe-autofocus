@@ -148,7 +148,7 @@ def test_calibration_falls_back_to_commarker_when_the_store_is_unreadable(monkey
     (tmp_path / "cm" / "config" / "lcsparam.cfg").write_bytes(config.encode_commarker_cfg(cfg))
 
     def unreadable(ctl):
-        raise flash.FlashError("no store")
+        raise flash.StoreError("no store")
 
     monkeypatch.setattr(session, "read_laser_calibration", unreadable)
     s, source = session.Session(config_path=tmp_path / "x.toml", simulate=True).factory_calibration()
@@ -193,3 +193,36 @@ def test_busy_laser_does_not_fall_back_to_commarker(monkeypatch, tmp_path):
     monkeypatch.setattr(session, "read_laser_calibration", busy)
     with pytest.raises(ControllerBusyError):
         session.Session(config_path=tmp_path / "x.toml", simulate=True).factory_calibration()
+
+
+def test_transfer_errors_do_not_fall_back_to_commarker(monkeypatch, tmp_path):
+    from omni_autofocus import config, session
+
+    monkeypatch.setattr(config, "COMMARKER_DIR", tmp_path / "cm")  # would be found if consulted
+    (tmp_path / "cm" / "config").mkdir(parents=True)
+    cfg = {
+        "lmcPars": {
+            "params": [{"parName": "default", "fBestFocalDistance": 180.0, "fBestFocalDistance_B": 219.5}]
+        }
+    }
+    (tmp_path / "cm" / "config" / "lcsparam.cfg").write_bytes(config.encode_commarker_cfg(cfg))
+
+    def transfer_failed(ctl):
+        raise flash.FlashError("flash load failed: aa e4 03")
+
+    monkeypatch.setattr(session, "read_laser_calibration", transfer_failed)
+    with pytest.raises(flash.FlashError, match="load failed"):
+        session.Session(config_path=tmp_path / "x.toml", simulate=True).factory_calibration()
+
+
+def test_first_run_is_saved_only_after_acceptance(tmp_path):
+    from omni_autofocus import session
+
+    path = tmp_path / "new.toml"
+    s = session.Session(config_path=path, simulate=True)
+    seen = []
+    with pytest.raises(session.NotAccepted):
+        s.settings(calibrate=True, accept=lambda found, source: seen.append(source) or False)
+    assert seen == ["the laser"] and not path.exists()
+    s.settings(calibrate=True, accept=lambda found, source: True)
+    assert path.exists()

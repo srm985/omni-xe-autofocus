@@ -15,6 +15,7 @@ def test_only_large_downward_moves_need_confirmation():
     assert not app.needs_confirmation(plan(+40.0), a)  # up: away from the work
     assert not app.needs_confirmation(plan(-9.9), a)
     assert app.needs_confirmation(plan(-10.1), a)
+    assert app.needs_confirmation(plan(+0.5), a, motion_fault=True)  # after a fault: every move
 
 
 def test_describe_error_is_actionable():
@@ -167,13 +168,13 @@ def test_simulation_is_marked_and_never_registers_the_hotkey(window):
     assert window.hotkey is None
 
 
-def test_window_cannot_close_while_busy(window, monkeypatch):
-    window.busy = True
+def test_window_cannot_close_while_z_may_move(window):
+    window.moving = True
     try:
         window.close()
         assert window.root.winfo_exists() and "Wait until Z has stopped" in window.detail.cget("text")
     finally:
-        window.busy = False
+        window.moving = False
 
 
 def test_bad_event_does_not_stop_the_window(window):
@@ -190,8 +191,9 @@ def test_first_run_shows_the_calibration_and_can_cancel(window, monkeypatch, tmp
     monkeypatch.setattr(window, "_ask_yes_no", lambda q: asked.append(q) or False)
     window.autofocus()
     settle(window)
-    assert "First run" in asked[0] and "lens B 222.0 mm" in asked[0]
+    assert "First use" in asked[0] and "Lens B: 222.0 mm" in asked[0]
     assert window.status.cget("text") == "Cancelled"
+    assert not fresh.exists()  # declined: nothing saved
     board = window._session.open()[0].__enter__()
     assert board.sensor_mm == 205.0
 
@@ -205,3 +207,26 @@ def test_lens_summary():
     assert app.lens_summary("lens A (from ComMarker Studio's lens setting; x)", 181.0).startswith(
         "Lens A · from ComMarker Studio"
     )
+
+
+def test_motion_fault_latches_until_z_follows_again(window, monkeypatch):
+    board = window._session.open()[0].__enter__()
+    board.z_reverse = False  # Z wired the other way round
+    window._verified_axis = None  # as on a fresh start: direction not yet seen
+    asked = []
+    monkeypatch.setattr(window, "_ask_yes_no", lambda q: asked.append(q) or True)
+    try:
+        window.autofocus()
+        settle(window)
+        assert window.status.cget("text") == "Stopped" and "invert_direction" in window.detail.cget("text")
+        assert board.sensor_mm == 202.0 and window.motion_fault  # only the 3 mm probe went wrong
+        assert asked == []
+        board.z_reverse = True  # fixed
+        window.autofocus()
+        settle(window)
+        assert asked and "did not move as expected" in asked[0]  # asked because of the earlier fault
+        assert window.status.cget("text") == "In focus" and not window.motion_fault
+    finally:
+        board.z_reverse = True
+        window.motion_fault = False
+        window._verified_axis = None

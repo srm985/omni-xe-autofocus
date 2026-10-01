@@ -1,0 +1,32 @@
+# omni-autofocus settings
+# Sensor distances are what the height sensor reads, not lens-to-surface distances.
+
+[focus]
+lens = "auto"
+target_a_mm = 181.0
+target_b_mm = 222.0
+field_a_mm = 70.0
+field_b_mm = 150.0
+offset_mm = 0.0
+deadband_mm = 0.1
+sensor_min_mm = 120.0
+sensor_max_mm = 280.0
+max_move_mm = 60.0
+samples = 3
+
+[z_axis]
+axis_id = 1
+reverse = true
+pitch_pulse = 3200
+screw_pitch = 4.0
+max_run_speed = 320.0
+start_speed = 0.0
+run_speed = 8.0
+acc_speed = 5.0
+gear_ratio = 1.0
+invert_direction = false
+
+[app]
+hotkey = "ctrl+alt+f"
+sounds = true
+confirm_down_above_mm = 10.0

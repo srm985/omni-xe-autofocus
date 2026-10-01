@@ -190,11 +190,12 @@ def _autofocus(ctl: Controller, s: config.Settings, *, passes: int, dry_run: boo
 
     asked: list[bool] = []
 
-    def confirm(p: autofocus.FocusPlan) -> bool:  # the command line asks once, before the first move
-        if asked:
+    def confirm(p: autofocus.FocusPlan) -> bool:
+        # Ask before the first move, and before any later large move towards the work.
+        if asked and not autofocus.is_large_downward(p, s.app.confirm_down_above_mm):
             return True
         asked.append(True)
-        return _confirm("Move the Z axis now?", yes)
+        return _confirm(f"Move the Z axis {p.move_mm:+.1f} mm now?", yes)
 
     try:
         result = autofocus.run(ctl, s, passes=passes, dry_run=dry_run, confirm=confirm, on_plan=show)

@@ -21,6 +21,10 @@ CONFLICTING_PROGRAMS = {"commarker_studio.exe": "ComMarker Studio"}
 WARN_PROGRAMS = {"lightburn.exe": "LightBurn"}
 
 
+class NotAccepted(Exception):
+    """The user declined the factory calibration offered on first use; nothing was saved."""
+
+
 class ConflictError(ControllerError):
     """Another program that must not run at the same time (ComMarker Studio) is running."""
 
@@ -156,7 +160,7 @@ class Session:
         try:
             with dev:
                 return config.from_commarker(read_laser_calibration(ctl)), "the laser"
-        except (flash.FlashError, ValueError, KeyError, IndexError) as e:
+        except (flash.StoreError, ValueError, KeyError, IndexError) as e:
             # The laser answered but has no usable stored calibration. Busy or communication errors
             # propagate instead: retrying later gets the laser's own values.
             log.info("the laser has no usable stored calibration: %s", e)
@@ -171,7 +175,7 @@ class Session:
             "machine as focus.target_a_mm / focus.target_b_mm."
         )
 
-    def settings(self, *, calibrate: bool = False) -> tuple[config.Settings, str | None]:
+    def settings(self, *, calibrate: bool = False, accept=None) -> tuple[config.Settings, str | None]:
         """Settings from the file, plus a note when something noteworthy happened.
 
         With ``calibrate``, a missing file is first created from the factory calibration (laser, then
@@ -180,6 +184,9 @@ class Session:
         note = None
         if calibrate and not self.path.exists():
             s, source = self.factory_calibration()
+            config.validate(s)
+            if accept is not None and not accept(s, source):  # ask before anything is saved
+                raise NotAccepted(f"the calibration from {source} was not accepted")
             config.save(s, self.path)
             note = f"First run: saved the factory calibration from {source} to {self.path}"
         s = config.load(self.path)
@@ -187,11 +194,13 @@ class Session:
             s = replace(s, focus=replace(s.focus, lens=self.lens_override))
         return s, note
 
-    def settings_with_lens(self, *, calibrate: bool = True) -> tuple[config.Settings, str, str | None]:
+    def settings_with_lens(
+        self, *, calibrate: bool = True, accept=None
+    ) -> tuple[config.Settings, str, str | None]:
         """Settings with the lens resolved (explicit, LightBurn, then ComMarker), the reason for the
         choice, and the first-run note if any. Without ``calibrate`` and without a settings file, the
         focus heights are only placeholders: use it to show the lens, not to focus."""
-        s, note = self.settings(calibrate=calibrate)
+        s, note = self.settings(calibrate=calibrate, accept=accept)
         try:
             s, why = lens.resolve(s)
         except lens.LensError:

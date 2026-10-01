@@ -320,7 +320,7 @@ def test_reversed_z_direction_stops_after_the_first_move(tmp_path):
     s = replace(config.Settings(), focus=replace(config.Settings().focus, lens="b"))
     with pytest.raises(autofocus.FocusError, match="invert_direction"):
         autofocus.run(ctl, s, confirm=lambda p: True)
-    assert board.sensor_mm == pytest.approx(188.0)  # one 17 mm move the wrong way, not a second one
+    assert board.sensor_mm == pytest.approx(202.0)  # only the 3 mm probe went the wrong way
 
 
 def test_check_motion_ignores_sensor_noise():
@@ -444,3 +444,60 @@ def test_unexpected_error_keeps_the_console_open(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_pause", paused.append)
     assert cli.main() == 1
     assert paused == [1] and "surprise" in capsys.readouterr().err
+
+
+def test_probe_is_skipped_once_z_is_known_to_follow():
+    from omni_autofocus import autofocus
+    from omni_autofocus.controller import Controller
+    from omni_autofocus.simulator import FakeClock, SimulatedBoard
+
+    board = SimulatedBoard(sensor_mm=205.0)
+    clock = FakeClock()
+    ctl = Controller(board, sleep=clock.sleep, clock=clock)
+    s = replace(config.Settings(), focus=replace(config.Settings().focus, lens="b"))
+    first = autofocus.run(ctl, s)
+    assert first.outcome is autofocus.Outcome.IN_FOCUS and first.verified
+    probed = len(board.lists)
+    assert probed == 2  # 3 mm probe, then the remaining 14 mm
+    board.sensor_mm = 205.0
+    autofocus.run(ctl, s, probe=False)
+    assert len(board.lists) == probed + 1  # one 17 mm move
+
+
+def test_settings_ranges_are_enforced(tmp_path):
+    path = tmp_path / "s.toml"
+    for bad in (
+        "[focus]\nmax_move_mm = nan\n",
+        "[focus]\nmax_move_mm = 0.0\n",
+        "[focus]\nsamples = 0\n",
+        "[focus]\ntarget_b_mm = 35.0\n",
+        "[z_axis]\npitch_pulse = -3200\n",
+        "[app]\nconfirm_down_above_mm = inf\n",
+    ):
+        path.write_text(bad)
+        with pytest.raises(ValueError, match="out of range"):
+            config.load(path)
+    with pytest.raises(ValueError, match="out of range"):
+        config.set_value(config.Settings(), "focus.max_move_mm", "nan")
+
+
+def test_cli_asks_again_before_a_large_second_downward_move(monkeypatch):
+    from omni_autofocus import cli
+    from omni_autofocus.controller import Controller
+    from omni_autofocus.simulator import FakeClock, SimulatedBoard
+
+    board = SimulatedBoard(sensor_mm=182.0)  # 40 mm below focus
+    clock = FakeClock()
+    ctl = Controller(board, sleep=clock.sleep, clock=clock)
+    real_move = Controller.move_axis
+
+    def overshoot(self, params, pulses, **kw):  # every move travels 45 % too far
+        return real_move(self, params, int(pulses * 1.45))
+
+    monkeypatch.setattr(Controller, "move_axis", overshoot)
+    asked = []
+    monkeypatch.setattr(cli, "_confirm", lambda prompt, yes: asked.append(prompt) or True)
+    s = replace(config.Settings(), focus=replace(config.Settings().focus, lens="b"))
+    cli._autofocus(ctl, s, passes=2, dry_run=False, yes=False)
+    # first move up (+40 mm), then the overshoot needs a large move down: asked both times
+    assert len(asked) == 2 and "+40.0 mm" in asked[0] and asked[1].startswith("Move the Z axis -")

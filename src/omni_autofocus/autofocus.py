@@ -64,6 +64,7 @@ class FocusResult:
     target_mm: float
     plans: tuple[FocusPlan, ...]
     moved: bool  # Z moved at least once
+    verified: bool = False  # a move of 1 mm or more was seen to go the commanded way
 
     @property
     def error_mm(self) -> float:
@@ -74,14 +75,23 @@ class FocusResult:
 # hand meanwhile, so measure again before moving.
 HUMAN_PAUSE_S = 1.0
 RECHECK_MM = 0.5
+# Until Z has been seen to follow a move, a longer move starts with this much, checked first. A
+# machine whose Z runs backwards then goes at most this far the wrong way.
+PROBE_MM = 3.0
 
 
-def check_motion(move_mm: float, change_mm: float) -> None:
-    """Raise unless the sensor reading changed roughly as much as Z was told to move, the same way.
+class MotionError(FocusError):
+    """Z did not follow a move as commanded (reversed direction, stall, wrong pitch)."""
 
-    Catches a reversed Z direction or a wrong pulses-per-mm before a second pass makes it worse.
-    Sensor noise is about +-0.2 mm, so small moves can never trip it.
-    """
+
+def is_large_downward(p: FocusPlan, threshold_mm: float) -> bool:
+    """A move towards the work (down) larger than ``threshold_mm``."""
+    return p.move_mm < -abs(threshold_mm)
+
+
+def check_motion(move_mm: float, change_mm: float, *, inverted: bool = False) -> None:
+    """Raise :class:`MotionError` unless the sensor reading changed roughly as much as Z was told to
+    move, the same way. Sensor noise is about +-0.2 mm, so small moves can never trip it."""
     wrong_way = move_mm * change_mm < 0 and abs(change_mm) > 0.5
     too_little = abs(change_mm) < 0.5 * abs(move_mm) - 0.5
     too_much = abs(change_mm) > 1.5 * abs(move_mm) + 0.5
@@ -92,11 +102,11 @@ def check_motion(move_mm: float, change_mm: float) -> None:
         f"{change_mm:+.1f} mm. Stopped"
     )
     if wrong_way:
-        raise FocusError(
-            msg + ". If Z moved the opposite way, run "
-            "'omni-autofocus config set z_axis.invert_direction true'"
+        raise MotionError(
+            msg + ". If Z moved the opposite way, open the settings file (app: ⋯ menu > Open settings "
+            f"file) and set z_axis.invert_direction = {str(not inverted).lower()}"
         )
-    raise FocusError(msg + " (stall, end of travel, or wrong z_axis pitch settings)")
+    raise MotionError(msg + " (stall, end of travel, or wrong z_axis pitch settings)")
 
 
 def run(
@@ -107,17 +117,31 @@ def run(
     dry_run: bool = False,
     confirm: Callable[[FocusPlan], bool] | None = None,
     on_plan: Callable[[int, FocusPlan], None] | None = None,
+    probe: bool = True,
 ) -> FocusResult:
     """Measure, move, re-measure: up to ``passes`` moves, then a final check.
 
     ``confirm`` is asked before every move and decides itself whether to ask a person; ``on_plan``
-    sees every measurement. After every move the sensor must have changed as commanded
-    (:func:`check_motion`). Raises :class:`FocusError` when a reading is out of range, a move
-    exceeds the safety limit, Z did not follow, or the height changed while a person was asked.
+    sees every measurement. With ``probe`` (until Z is known to follow), a move longer than
+    :data:`PROBE_MM` starts with a checked :data:`PROBE_MM` step. After every move the sensor must
+    have changed as commanded (:func:`check_motion`). Raises :class:`FocusError` when a reading is
+    out of range, a move exceeds the safety limit, Z did not follow (:class:`MotionError`), or the
+    height changed while a person was asked.
     """
     samples = settings.focus.samples
     params = settings.z_axis.axis_params()
+    inverted = settings.z_axis.invert_direction
     plans: list[FocusPlan] = []
+    verified = False
+
+    def move(mm: float, pulses: int, start_height: float) -> float:
+        nonlocal verified
+        ctl.move_axis(params, pulses)
+        new_height = ctl.read_height_median(samples)
+        check_motion(mm, new_height - start_height, inverted=inverted)
+        verified = verified or abs(mm) >= 1.0
+        return new_height
+
     height = ctl.read_height_median(samples)
     for iteration in range(1, passes + 1):
         p = plan(height, settings)
@@ -125,12 +149,16 @@ def run(
         if on_plan:
             on_plan(iteration, p)
         if not p.needed:
-            return FocusResult(Outcome.IN_FOCUS, p.height_mm, p.target_mm, tuple(plans), iteration > 1)
+            return FocusResult(
+                Outcome.IN_FOCUS, p.height_mm, p.target_mm, tuple(plans), iteration > 1, verified
+            )
         if dry_run:
-            return FocusResult(Outcome.DRY_RUN, p.height_mm, p.target_mm, tuple(plans), False)
+            return FocusResult(Outcome.DRY_RUN, p.height_mm, p.target_mm, tuple(plans), False, verified)
         asked_at = time.monotonic()
         if confirm and not confirm(p):
-            return FocusResult(Outcome.CANCELLED, p.height_mm, p.target_mm, tuple(plans), iteration > 1)
+            return FocusResult(
+                Outcome.CANCELLED, p.height_mm, p.target_mm, tuple(plans), iteration > 1, verified
+            )
         if time.monotonic() - asked_at > HUMAN_PAUSE_S:
             again = ctl.read_height_median(samples)
             if abs(again - height) > RECHECK_MM:
@@ -138,10 +166,13 @@ def run(
                     f"the height changed while waiting for an answer ({height:.1f} -> {again:.1f} mm); "
                     "nothing moved, start autofocus again"
                 )
-        ctl.move_axis(params, p.pulses)
-        new_height = ctl.read_height_median(samples)
-        check_motion(p.move_mm, new_height - height)
-        height = new_height
+        if probe and not verified and abs(p.move_mm) > PROBE_MM + 1.0:
+            step = PROBE_MM if p.move_mm > 0 else -PROBE_MM
+            step_pulses = params.mm_to_pulses(step)
+            height = move(step, step_pulses, height)
+            height = move(p.move_mm - step, p.pulses - step_pulses, height)
+        else:
+            height = move(p.move_mm, p.pulses, height)
     target = settings.focus.target_mm
     outcome = Outcome.IN_FOCUS if abs(target - height) <= FOCUS_TOLERANCE_MM else Outcome.NOT_CONVERGED
-    return FocusResult(outcome, height, target, tuple(plans), bool(plans))
+    return FocusResult(outcome, height, target, tuple(plans), bool(plans), verified)

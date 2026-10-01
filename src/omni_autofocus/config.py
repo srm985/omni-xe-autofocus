@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tomllib
 from dataclasses import asdict, dataclass, field, fields, replace
@@ -112,6 +113,38 @@ def _apply(section_cls, data: dict, where: str):
     return section_cls(**values)
 
 
+def _check(ok: bool, what: str) -> None:
+    if not ok:
+        raise ValueError(f"setting out of range: {what}")
+
+
+def validate(s: Settings) -> Settings:
+    """Reject values that would switch off a safety check or make focusing impossible."""
+    for name in SECTIONS:
+        for key, value in asdict(getattr(s, name)).items():
+            if isinstance(value, float):
+                _check(math.isfinite(value), f"{name}.{key} = {value}")
+    f, z = s.focus, s.z_axis
+    _check(f.lens.lower() in ("auto", "a", "b"), "focus.lens must be auto, a or b")
+    _check(0 < f.sensor_min_mm < f.sensor_max_mm <= 1000, "focus.sensor_min_mm < focus.sensor_max_mm")
+    for key in ("target_a_mm", "target_b_mm"):
+        _check(
+            f.sensor_min_mm <= getattr(f, key) <= f.sensor_max_mm,
+            f"focus.{key} must be within the sensor range {f.sensor_min_mm:g}-{f.sensor_max_mm:g} mm",
+        )
+    _check(f.field_a_mm > 0 and f.field_b_mm > 0, "focus.field_a_mm / field_b_mm must be > 0")
+    _check(abs(f.offset_mm) <= 20, "focus.offset_mm must be between -20 and 20")
+    _check(0 <= f.deadband_mm <= 2, "focus.deadband_mm must be between 0 and 2")
+    _check(0 < f.max_move_mm <= 150, "focus.max_move_mm must be between 0 and 150")
+    _check(1 <= f.samples <= 15, "focus.samples must be between 1 and 15")
+    _check(0 <= z.axis_id <= 3, "z_axis.axis_id must be 0..3")
+    _check(z.pitch_pulse > 0 and z.screw_pitch > 0, "z_axis.pitch_pulse and screw_pitch must be > 0")
+    _check(z.run_speed > 0 and z.acc_speed > 0 and z.max_run_speed > 0, "z_axis speeds must be > 0")
+    _check(z.start_speed >= 0 and z.gear_ratio > 0, "z_axis.start_speed >= 0, gear_ratio > 0")
+    _check(s.app.confirm_down_above_mm >= 0, "app.confirm_down_above_mm must be >= 0")
+    return s
+
+
 def settings_path(path: Path | None = None) -> Path:
     """The settings file in use: ``path``, else $OMNI_AUTOFOCUS_CONFIG, else the default location."""
     if path is not None:
@@ -130,10 +163,12 @@ def load(path: Path | None = None) -> Settings:
     unknown = set(data) - set(SECTIONS)
     if unknown:
         raise ValueError(f"unknown section(s): {', '.join(sorted(unknown))}")
-    return Settings(
-        focus=_apply(FocusSettings, data.get("focus", {}), "focus"),
-        z_axis=_apply(ZAxisSettings, data.get("z_axis", {}), "z_axis"),
-        app=_apply(AppSettings, data.get("app", {}), "app"),
+    return validate(
+        Settings(
+            focus=_apply(FocusSettings, data.get("focus", {}), "focus"),
+            z_axis=_apply(ZAxisSettings, data.get("z_axis", {}), "z_axis"),
+            app=_apply(AppSettings, data.get("app", {}), "app"),
+        )
     )
 
 
@@ -162,7 +197,7 @@ def set_value(settings: Settings, dotted_key: str, text: str) -> Settings:
         raise ValueError("focus.lens must be auto, a or b")
     if dotted_key == "app.hotkey" and value:
         parse_hotkey(str(value))  # raises ValueError if malformed
-    return replace(settings, **{section_name: replace(section, **{key: value})})
+    return validate(replace(settings, **{section_name: replace(section, **{key: value})}))
 
 
 def _toml_value(v) -> str:

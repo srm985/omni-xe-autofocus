@@ -32,7 +32,8 @@ ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
 
 [Tasks]
-Name: "startup"; Description: "Start Omni Autofocus when Windows starts (recommended)"
+; Offered on a fresh install only: an upgrade keeps whatever the user chose in the app's menu.
+Name: "startup"; Description: "Start Omni Autofocus when Windows starts (recommended)"; Check: not IsUpgrade
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Files]
@@ -61,6 +62,12 @@ Type: dirifempty; Name: "{localappdata}\omni-autofocus"
 [Code]
 const
   AppMutexName = 'OmniAutofocusApp';  { held by the running app, see app.py MUTEX_NAME }
+  LaserMutexName = 'OmniAutofocusLaser';  { held while any Omni Autofocus program uses the laser }
+
+function IsUpgrade(): Boolean;
+begin
+  Result := RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{7C1F5E0A-3B9D-4C55-9E61-0D2A8B7F4E13}_is1');
+end;
 
 { True while any OmniAutofocus.exe runs (a one-file .exe is two processes: launcher and app). }
 function AppProcessRunning(): Boolean;
@@ -78,6 +85,14 @@ var
   ResultCode, I: Integer;
 begin
   Result := True;
+  if CheckForMutexes(LaserMutexName) and not CheckForMutexes(AppMutexName) then
+  begin
+    { the command-line tool is using the laser, e.g. fine-tuning: closing it would leave Z offset }
+    Result := False;
+    SuppressibleMsgBox('Omni Autofocus is using the laser (fine-tuning?). Finish there, then try again.',
+      mbError, MB_OK, IDOK);
+    Exit;
+  end;
   if not CheckForMutexes(AppMutexName) and not AppProcessRunning() then
     Exit;
   Log('Omni Autofocus is running: asking it to close');

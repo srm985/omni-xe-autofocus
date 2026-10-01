@@ -63,16 +63,19 @@ def describe_error(e: BaseException) -> str:
     return str(e) or type(e).__name__
 
 
-def needs_confirmation(p: autofocus.FocusPlan, app: config.AppSettings) -> bool:
-    """One-click focus asks only before a downward move larger than the configured threshold."""
-    return p.move_mm < -abs(app.confirm_down_above_mm)
+def needs_confirmation(
+    p: autofocus.FocusPlan, app: config.AppSettings, *, motion_fault: bool = False
+) -> bool:
+    """One-click focus asks only before a downward move larger than the configured threshold, or
+    before every move after Z last failed to follow a move."""
+    return motion_fault or autofocus.is_large_downward(p, app.confirm_down_above_mm)
 
 
 def describe_result(r: autofocus.FocusResult) -> tuple[str, str, str]:
     """(headline, detail, tone) for a finished autofocus."""
     reading = f"sensor {r.height_mm:.1f} mm, target {r.target_mm:.1f} mm"
     if r.outcome is autofocus.Outcome.CANCELLED:
-        return "Cancelled", "Z did not move.", WARN
+        return "Cancelled", ("Stopped after the first correction." if r.moved else "Z did not move."), WARN
     if r.outcome is autofocus.Outcome.NOT_CONVERGED:
         return "Not in focus", f"Still {r.error_mm:+.2f} mm off ({reading}). Check the Z axis.", ERR
     if r.moved:
@@ -257,6 +260,9 @@ class App:
         self.state = _load_state()
         self.lens_choice = "Auto"
         self._tone = INFO
+        self.moving = False  # an operation that can move Z is running
+        self.motion_fault = bool(self.state.get("motion_fault"))
+        self._verified_axis = None  # z_axis settings Z was last seen to follow
 
         self.root = tk.Tk()
         self.title = window_title(simulate)
@@ -366,13 +372,20 @@ class App:
         self.root.mainloop()
 
     def close(self) -> None:
-        if self.busy:  # quitting would abandon a move half-way; the installer's close request waits
+        if self.moving:  # quitting would abandon a move half-way; the installer's close request waits
             self._set_status("Still moving", WARN)
             self._set_detail("Wait until Z has stopped, then close the window.")
             return
         if self.hotkey:
             self.hotkey.stop()
-        _save_state({"x": self.root.winfo_x(), "y": self.root.winfo_y(), "on_top": self.on_top.get()})
+        _save_state(
+            {
+                "x": self.root.winfo_x(),
+                "y": self.root.winfo_y(),
+                "on_top": self.on_top.get(),
+                "motion_fault": self.motion_fault,
+            }
+        )
         self.root.destroy()
 
     def _restore_position(self) -> None:
@@ -408,11 +421,12 @@ class App:
 
     # -- worker plumbing ------------------------------------------------------------------------------
 
-    def _start(self, job, *args) -> None:
+    def _start(self, job, *args, moves: bool = False) -> None:
         if self.busy:
             self._set_detail("Still working on the last request…")
             return
         self.busy = True
+        self.moving = moves
         self.button.set_enabled(False)
         self._set_dot(BUSY)
         threading.Thread(target=self._work, args=(job, *args), daemon=True).start()
@@ -420,11 +434,13 @@ class App:
     def _work(self, job, *args) -> None:
         try:
             job(*args)
-        except Cancelled:
+        except (Cancelled, session.NotAccepted):
             self.events.put(("status", "Cancelled", WARN))
             self.events.put(("detail", "Z did not move."))
         except Exception as e:  # noqa: BLE001 - every failure becomes a status line
             log.debug("operation failed", exc_info=True)
+            if isinstance(e, autofocus.MotionError):
+                self.events.put(("motion", False))
             self.events.put(("status", "Stopped", ERR))
             self.events.put(("detail", describe_error(e)))
             self.events.put(("beep", False))
@@ -467,8 +483,14 @@ class App:
                 _beep(event[1])
         elif kind == "hotkey":
             self.autofocus()
+        elif kind == "motion":  # latch a motion fault until a move is seen to follow again
+            ok, axis = event[1], event[2] if len(event) > 2 else None
+            self.motion_fault = not ok
+            self._verified_axis = axis if ok else None
+            _save_state({**_load_state(), "motion_fault": self.motion_fault})
         elif kind == "idle":
             self.busy = False
+            self.moving = False
             self.button.set_enabled(True)
             self._set_dot(self._tone)
 
@@ -509,14 +531,17 @@ class App:
 
     def _settings(self, *, calibrate: bool = True) -> config.Settings:
         calibrated = calibrate or self._session.path.exists()
-        s, why, note = self._session.settings_with_lens(calibrate=calibrate)
+
+        def accept(found: config.Settings, source: str) -> bool:  # first use: ask before saving
+            return self._ask(
+                f"First use: these focus heights were read from {source}.\n\n"
+                f"Lens A: {found.focus.target_a_mm:.1f} mm\nLens B: {found.focus.target_b_mm:.1f} mm\n"
+                "(sensor readings at best focus)\n\nUse them and save them to the settings file?"
+            )
+
+        s, why, _note = self._session.settings_with_lens(calibrate=calibrate, accept=accept)
         self._post("app", s.app)
         self._post("lens", lens_summary(why, s.focus.target_mm if calibrated else None))
-        if note and not self._ask(
-            f"{note}.\n\nFocus heights (sensor readings): lens A {s.focus.target_a_mm:.1f} mm, "
-            f"lens B {s.focus.target_b_mm:.1f} mm.\n\nContinue?"
-        ):
-            raise Cancelled
         return s
 
     def _prepare(self) -> None:
@@ -534,7 +559,7 @@ class App:
                 self._post("app", config.AppSettings())
 
     def autofocus(self) -> None:
-        self._start(self._autofocus)
+        self._start(self._autofocus, moves=True)
 
     def _autofocus(self) -> None:
         note = self._session.check_other_software()
@@ -547,17 +572,26 @@ class App:
                 self._post("status", f"Moving Z {p.move_mm:+.1f} mm…", BUSY)
             self._post("detail", f"Sensor {p.height_mm:.1f} mm · target {p.target_mm:.1f} mm")
 
+        fault = self.motion_fault
+
         def confirm(p: autofocus.FocusPlan) -> bool:
-            if not needs_confirmation(p, s.app):
+            if not needs_confirmation(p, s.app, motion_fault=fault):
                 return True
+            direction = "DOWN" if p.move_mm < 0 else "UP"
+            towards = ", towards the work" if p.move_mm < 0 else ""
+            warning = "Last time Z did not move as expected.\n\n" if fault else ""
             return self._ask(
-                f"Move the head DOWN {-p.move_mm:.1f} mm, towards the work?\n\n"
+                f"{warning}Move the head {direction} {abs(p.move_mm):.1f} mm{towards}?\n\n"
                 f"Sensor reads {p.height_mm:.1f} mm, focus is at {p.target_mm:.1f} mm."
             )
 
         dev, ctl = self._session.open()
         with dev:
-            result = autofocus.run(ctl, s, passes=2, confirm=confirm, on_plan=on_plan)
+            result = autofocus.run(
+                ctl, s, passes=2, confirm=confirm, on_plan=on_plan, probe=s.z_axis != self._verified_axis
+            )
+        if result.verified:
+            self._post("motion", True, s.z_axis)
         headline, detail, tone = describe_result(result)
         self._post("status", headline, tone)
         self._post("detail", detail)

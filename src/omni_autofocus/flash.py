@@ -37,7 +37,11 @@ FLAG_LZMA = 0x01
 
 
 class FlashError(ControllerError):
-    pass
+    """Reading the flash failed (communication, controller busy)."""
+
+
+class StoreError(FlashError):
+    """The flash was read, but holds no usable file (missing, corrupt, undecodable)."""
 
 
 def crc16(data: bytes) -> int:
@@ -141,13 +145,13 @@ def read(ctl: Controller, info: FlashInfo, offset: int, length: int) -> bytes:
 
 def parse_index(block: bytes) -> list[Entry]:
     if len(block) < INDEX_SIZE:
-        raise FlashError("index block too short")
+        raise StoreError("index block too short")
     (stored,) = struct.unpack_from("<H", block, 0)
     if crc16(block[2:INDEX_SIZE]) != stored:
-        raise FlashError("index CRC mismatch")
+        raise StoreError("index CRC mismatch")
     marker, version, sector = struct.unpack_from("<HII", block, 2)
     if (marker, version, sector) != (0x1000, 1, 0x1000):
-        raise FlashError(f"unexpected index header {marker:#x}/{version}/{sector:#x}")
+        raise StoreError(f"unexpected index header {marker:#x}/{version}/{sector:#x}")
     entries = []
     for i in range(MAX_ENTRIES):
         raw = block[ENTRY_OFFSET + i * ENTRY_SIZE : ENTRY_OFFSET + (i + 1) * ENTRY_SIZE]
@@ -170,14 +174,16 @@ def read_index(ctl: Controller, info: FlashInfo) -> list[Entry]:
             return parse_index(read(ctl, info, copy * INDEX_SIZE, INDEX_SIZE))
         except FlashError as e:
             last = e
-    raise FlashError(f"no valid flash index ({last})")
+    if isinstance(last, StoreError):  # both copies read fine but are unusable
+        raise StoreError(f"no valid flash index ({last})")
+    raise last
 
 
 def decompress(data: bytes) -> bytes:
     """Undo the vendor's compression (``utils::algorithm::lzma``): 5-byte LZMA properties, 8-byte
     little-endian uncompressed size, then the raw LZMA stream, i.e. the classic ``.lzma`` format."""
     if len(data) < 13:
-        raise FlashError("compressed file too short")
+        raise StoreError("compressed file too short")
     (size,) = struct.unpack_from("<Q", data, 5)
     props, dict_size = data[0], struct.unpack_from("<I", data, 1)[0]
     lc, rem = props % 9, props // 9
@@ -186,7 +192,7 @@ def decompress(data: bytes) -> bytes:
     try:
         out = lzma.LZMADecompressor(format=lzma.FORMAT_RAW, filters=[filt]).decompress(data[13:])
     except lzma.LZMAError as e:
-        raise FlashError(f"could not decompress flash file: {e}") from e
+        raise StoreError(f"could not decompress flash file: {e}") from e
     return out[:size] if size != 0xFFFFFFFFFFFFFFFF else out
 
 
@@ -201,7 +207,7 @@ def compress(data: bytes) -> bytes:
 def read_file(ctl: Controller, info: FlashInfo, entry: Entry, sector_size: int = INDEX_SIZE) -> bytes:
     data = read(ctl, info, entry.sector * sector_size, entry.size)
     if crc64(data) != entry.crc64:
-        raise FlashError(f"{entry.name}: CRC64 mismatch")
+        raise StoreError(f"{entry.name}: CRC64 mismatch")
     return decompress(data) if entry.compressed else data
 
 
@@ -235,20 +241,20 @@ def read_named(ctl: Controller, name: str) -> bytes:
     for entry in read_index(ctl, info):
         if entry.name == name or entry.name.endswith("/" + name.lstrip("./")):
             return read_file(ctl, info, entry)
-    raise FlashError(f"{name} is not stored on the controller")
+    raise StoreError(f"{name} is not stored on the controller")
 
 
 def qt_uncompress(data: bytes) -> bytes:
     """Qt ``qUncompress``: 4-byte big-endian length, then a zlib stream."""
     if len(data) < 6:
-        raise FlashError("compressed file too short")
+        raise StoreError("compressed file too short")
     (size,) = struct.unpack_from(">I", data, 0)
     try:
         out = zlib.decompress(data[4:])
     except zlib.error as e:
-        raise FlashError(f"could not uncompress file: {e}") from e
+        raise StoreError(f"could not uncompress file: {e}") from e
     if len(out) != size:
-        raise FlashError(f"uncompressed size {len(out)} differs from the declared {size}")
+        raise StoreError(f"uncompressed size {len(out)} differs from the declared {size}")
     return out
 
 
