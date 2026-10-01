@@ -41,12 +41,16 @@ def reach_mm(offsets: list[float]) -> float:
     return max(abs(o) for o in offsets) + BACKLASH_PRETRAVEL_MM
 
 
-def best_focus(reference_mm: float, lowest: float, highest: float) -> tuple[float, float]:
-    """(centre of the good range, new focus height as a sensor reading). ``focus.offset_mm`` stays a
-    separate nudge on top of the saved height."""
+def best_focus(aimed_mm: float, lowest: float, highest: float) -> tuple[float, float]:
+    """(centre of the good range, new focus height as a sensor reading).
+
+    ``aimed_mm`` is the height autofocus aims for (the lens's focus height plus ``focus.offset_mm``),
+    not the sensor reading after it: that reading wobbles by about 0.2 mm, and the marks are 1 mm
+    apart, so the reading would only add noise. Picking 0..0 therefore changes nothing. The offset
+    stays a separate nudge on top of the saved height."""
     lo, hi = min(lowest, highest), max(lowest, highest)
     centre = (lo + hi) / 2
-    return centre, round(reference_mm + centre, 1)
+    return centre, round(aimed_mm + centre, 1)
 
 
 def save_focus_target(path: Path, lens_key: str, value: float) -> config.Settings:

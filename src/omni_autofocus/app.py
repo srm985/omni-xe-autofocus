@@ -928,8 +928,8 @@ class App:
             return None
         lo = parse_offset_label(self.t_low.value)
         hi = parse_offset_label(self.t_high.value)
-        centre, new = ladder.best_focus(t["run"].reference, lo, hi)
         f = t["settings"].focus
+        centre, new = ladder.best_focus(f.target_mm, lo, hi)
         old = f.target_b_mm if f.lens.lower() == "b" else f.target_a_mm
         ok = f.sensor_min_mm <= new <= f.sensor_max_mm
         edge = (

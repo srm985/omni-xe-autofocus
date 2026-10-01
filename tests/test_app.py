@@ -412,3 +412,18 @@ def test_fine_tune_busy_during_the_approach_keeps_the_run(window, monkeypatch):
     window._tune_secondary()
     settle(window)
     assert window.tune is None and board.sensor_mm == pytest.approx(reference, abs=0.01)
+
+
+def test_fine_tune_result_ignores_sensor_noise(window):
+    start_tune(window)
+    window.tune["run"].reference = 221.9  # the reading after autofocus wobbled by 0.1 mm
+    window.tune["stage"] = "result"
+    window._tune_render()
+    window.t_low.select("0", notify=True)
+    window.t_high.select("0", notify=True)
+    assert "matches the saved height (222.0 mm)" in window.t_outcome.cget("text")
+    assert not window.t_save.enabled and window.t_save.text == "Nothing to save"
+    window.tune["stage"] = "burn"
+    window._tune_secondary()  # Stop: back to focus
+    settle(window)
+    assert window.tune is None

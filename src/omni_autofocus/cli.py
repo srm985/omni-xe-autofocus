@@ -345,7 +345,7 @@ def _dial_in(args, s: config.Settings, burned: list[float], reference: float) ->
         print(
             "Note: the good range reaches the end of the ladder; consider a wider --range to find its edge."
         )
-    centre, new_target = ladder.best_focus(reference, lo, hi)
+    centre, new_target = ladder.best_focus(s.focus.target_mm, lo, hi)
     lens_key = s.focus.lens.lower()
     old_target = s.focus.target_b_mm if lens_key == "b" else s.focus.target_a_mm
     print(f"Good range {lo:+g} .. {hi:+g} mm -> centre {centre:+g} mm from the autofocus height.")
