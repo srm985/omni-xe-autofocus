@@ -133,6 +133,14 @@ holds the pad size) and sent on the data port. Optional LZMA compression (type 2
 ComMarker's autofocus thread then sleeps 2 s. This tool additionally waits at least the estimated
 travel time and for the `AA07` moving bit to clear before the final reset.
 
+### Which BSL library has what (for LightBurn)
+
+Checked 2026-10-01 by comparing exported symbol names: LightBurn 2.1.04's `executor.dll` (SHA-256
+`17A9454C2D65FBCA26C3F622ECB53B4499198752A52565468222DC7585F03A6F`) exports `setDataTransmit`,
+`sendAxisMovePulse`, `setRun`/`setReset`, `getDevExtState` and `getAxisStates`, but not
+`setDataTransmit2`, `readFlashData` or `getFlashInfo`. ComMarker Studio's `executor.dll` (SHA-256
+`6B6C3239699C7E2E5D80BE46500B27B20AD5F8C420F6789AC9EAB9AE908BF61B`) exports all of them.
+
 ## 5. Factory calibration in the controller's flash
 
 The controller's flash holds a small file store with ComMarker Studio's parameter files

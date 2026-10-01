@@ -10,13 +10,14 @@ head. LightBurn already drives their BSL controller, but autofocus only works in
 owners switch programs, or focus by hand, for every new work piece.
 
 Autofocus needs very little: **read the sensor, compute the move, move Z, check.** This kit contains
-everything needed to add it to LightBurn, all verified on a real Omni Xe 6W:
+everything needed to add it to LightBurn. The protocol, the Z moves and the calibration read are
+verified on a real Omni Xe 6W; see "Status of the evidence" for what is still pending:
 
 * the exact controller commands, with byte-exact test vectors;
 * the per-machine focus calibration, which the factory stores **in the laser itself**, so users type
   nothing in;
 * a working, tested reference implementation that runs next to LightBurn today
-  ([the repository](../../README.md), MIT);
+  ([https://github.com/srm985/omni-xe-autofocus](https://github.com/srm985/omni-xe-autofocus), MIT);
 * the safety checks that a one-click Z move needs;
 * a hardware owner who is happy to test LightBurn beta builds.
 
@@ -30,12 +31,15 @@ everything needed to add it to LightBurn, all verified on a real Omni Xe 6W:
 
 ## What LightBurn needs
 
-| Piece | Controller command | In LightBurn's bundled BSL `executor.dll` (checked against LightBurn 2.1.04) |
+| Piece | Controller command | In LightBurn's bundled BSL `executor.dll` (LightBurn 2.1.04, see note below) |
 |---|---|---|
 | Read the height sensor | `0xAAC1` RS-485 pass-through (`Executor7::setDataTransmit2`) | **No.** Only the older `setDataTransmit` (`0xAAC0`) |
 | Move Z | list command `0x03A0` (`sendAxisMovePulse`) in the run state (`0xAA10`) | Yes |
 | Confirm a move | `0xAA07` axis position counter and moving flag (`getDevExtState`) | Yes |
 | Read the factory calibration | `0xAAE0`/`AAE1`/`AAE4`/`AAE5` flash reads (`readFlashData`, `getFlashInfo`) | **No** |
+
+How this was checked: the exported symbol names in LightBurn 2.1.04's `executor.dll` (SHA-256
+`17a9454c…5f03a6f`) were compared with those of ComMarker Studio's `executor.dll` (`6b6c3239…908bf61b`).
 
 ComMarker Studio ships a newer build of the same BSL library that has all of these. So the simplest
 route is probably **a library update from BSL**; sending the few raw commands yourselves is the
@@ -47,22 +51,25 @@ alternative, and [integration-guide.md](integration-guide.md) has every byte for
 |---|---|
 | [integration-guide.md](integration-guide.md) | Step-by-step: sensor read, Z move, calibration, safety checks, suggested UI |
 | [test-vectors.json](test-vectors.json) | Byte-exact frames and payloads to unit-test an implementation |
-| [../protocol.md](../protocol.md) | The full protocol notes: framing, every field, what was verified |
-| [../hardware-testing.md](../hardware-testing.md) | What was verified on the machine, step by step |
-| [../../src/omni_autofocus/](../../src/omni_autofocus/) | Reference implementation (Python, standard library only) |
+| [protocol.md](https://github.com/srm985/omni-xe-autofocus/blob/main/docs/protocol.md) | The full protocol notes: framing, every field, what was verified |
+| [hardware-testing.md](https://github.com/srm985/omni-xe-autofocus/blob/main/docs/hardware-testing.md) | What was verified on the machine, step by step |
+| [src/omni_autofocus/](https://github.com/srm985/omni-xe-autofocus/tree/main/src/omni_autofocus) | Reference implementation (Python, standard library only) |
 
 ## Status of the evidence
 
 Verified on an Omni Xe 6W (USB `04B4:1004`, firmware as shipped in 2026): framing and checksums,
 state queries, the sensor pass-through and its "no target" value, Z moves (direction, 800 pulses/mm,
 position counter), the run-state requirement, the flash calibration read (including two quirks found
-only on hardware), and running alongside a connected LightBurn. Not yet tested: the Omni X (non-Xe)
+only on hardware), and running alongside a connected LightBurn. Pending on hardware: a test burn
+confirming focus quality at the autofocused height (a first ladder test was inconclusive because the
+galvo's depth of field is generous), automatic lens switching via LightBurn profiles, and the
+Windows app around the engine. Not yet tested: the Omni X (non-Xe)
 and other Omni variants, which may use other focus heights (the calibration read handles that) or Z
 parameters (also in the calibration).
 
 ## Contact and credit
 
-Sean, github.com/srm985. Happy to answer questions, review an implementation against the hardware,
+Sean, [github.com/srm985](https://github.com/srm985), project: [https://github.com/srm985/omni-xe-autofocus](https://github.com/srm985/omni-xe-autofocus). Happy to answer questions, review an implementation against the hardware,
 and test beta builds on an Omni Xe 6W.
 
 This is independent work, not affiliated with ComMarker or BSL. It contains no vendor code. It exists so the laser can be used with other software (interoperability).

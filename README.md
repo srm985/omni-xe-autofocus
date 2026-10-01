@@ -5,14 +5,15 @@ machine's built-in height sensor through the laser controller and moves the moto
 focus height, using the same rules as ComMarker Studio plus a few safety and accuracy improvements.
 ComMarker Studio is not needed.
 
-> **Status:** working on real hardware (Omni Xe 6W). See
-> [docs/hardware-testing.md](docs/hardware-testing.md) for what has been verified.
+> **Status:** the focusing engine and command line are verified on real hardware (Omni Xe 6W); the app
+> and installer are tested in simulation and await their hardware run. See
+> [docs/hardware-testing.md](docs/hardware-testing.md).
 
-![The Omni Autofocus window](docs/images/app.png)
+![The Omni Autofocus window (shown in simulation)](docs/images/app.png)
 
 ## Install
 
-1. Download **`OmniAutofocus-Setup-<version>.exe`** from the Releases page and run it. No
+1. Download **`OmniAutofocus-Setup-<version>.exe`** from the [Releases page](https://github.com/srm985/omni-xe-autofocus/releases) and run it. No
    administrator rights are needed. Windows may say it "protected your PC" because the installer is
    not code-signed: click **More info → Run anyway**.
 2. Leave **Start Omni Autofocus when Windows starts** ticked.
@@ -40,9 +41,14 @@ Good to know:
 * **LightBurn can stay open and connected.** Close its framing/red-light preview first: while the
   preview or a job runs, the laser is busy and Omni Autofocus will not move Z.
 * **Moving up never asks; a large move down asks first.** Up takes the head away from the work. A
-  move down of more than 10 mm (towards the work) shows the numbers and waits for **Yes**.
-* **The first time** you press Autofocus, the focus heights are read from the laser itself (ComMarker
-  measures them at the factory). There is nothing to type in.
+  move down of more than 10 mm (towards the work) shows the numbers and waits for **Yes** ("No" is
+  the default).
+* **Every move is checked.** The sensor must see the head move the way it was told. Until that has
+  been seen once, a longer move starts with a short 3 mm step. If Z ever does not follow, autofocus
+  stops, says why, and asks before every move until a move checks out again.
+* **The first time** you press Autofocus, the focus heights stored in the laser (ComMarker measures
+  them at the factory) are shown; press **Yes** to use and save them. There is nothing to type in.
+  If the laser holds no usable values, those from an installed ComMarker Studio are offered instead.
 * If the sensor "sees no surface", the head is far from working height: bring it roughly there with
   the machine's Z buttons and press Autofocus again.
 
@@ -52,8 +58,8 @@ The Omni takes two field lenses, each with its own focus height. The window show
 and why. In **Auto** it follows LightBurn: the field size of your BSL device profile (the last-used
 one, or the only one) picks lens A (70×70 mm) or B (150×150 mm). With one LightBurn profile per lens,
 as LightBurn recommends for galvos, switching profiles switches the focus height. If LightBurn's
-choice is not picked up, or you have no profile per lens, choose **Lens A** or **Lens B** in the
-window. Without LightBurn, ComMarker Studio's lens setting is used.
+choice is not picked up, or you have no profile per lens, choose **A** or **B** in the window (the
+choice is remembered). Without LightBurn, ComMarker Studio's lens setting is used.
 
 ## The ⋯ menu
 
@@ -65,6 +71,7 @@ window. Without LightBurn, ComMarker Studio's lens setting is used.
 | Start with Windows | Start Omni Autofocus when you log in. |
 | Check USB driver | Diagnoses the laser's USB connection and helps install the driver. |
 | Open settings file | Opens the settings in your text editor (see [Settings](#settings)). |
+| About | Version, credit and licence. |
 
 ## Fine-tuning focus
 
@@ -101,17 +108,19 @@ stored in your laser. Values are **sensor readings at best focus**, not lens-to-
 
 | key | meaning |
 |---|---|
-| `focus.target_a_mm`, `focus.target_b_mm` | focus height of each lens (sensor reading) |
-| `focus.offset_mm` | added to the focus height: a deliberate defocus or a global nudge |
-| `focus.max_move_mm` | refuse larger single moves (default 60) |
-| `focus.samples` | sensor readings per measurement (median, default 3) |
+| `focus.lens` | `"auto"` (default), `"a"` or `"b"` (the app's lens picker overrides it) |
+| `focus.target_a_mm`, `focus.target_b_mm` | focus height of each lens (sensor reading, inside the sensor range) |
+| `focus.offset_mm` | added to the focus height: a deliberate defocus or a global nudge (−20…20) |
+| `focus.max_move_mm` | refuse larger single moves (default 60, at most 150) |
+| `focus.samples` | sensor readings per measurement (median, default 3, 1…15) |
 | `focus.field_a_mm`, `focus.field_b_mm` | lens field sizes used to recognise LightBurn profiles |
-| `app.hotkey` | the global shortcut, e.g. `"ctrl+alt+f"` (letters, digits, F1–F12); `""` turns it off |
-| `app.confirm_down_above_mm` | downward moves larger than this ask first (default 10) |
+| `app.hotkey` | the global shortcut: one or more of ctrl, alt, shift, win, then a letter, digit, F1–F12, space, home or end, e.g. `"ctrl+alt+f"`; `""` turns it off |
+| `app.confirm_down_above_mm` | downward moves larger than this ask first (default 10, 0…60) |
 | `app.sounds` | chime when autofocus finishes (default `true`) |
 | `z_axis.invert_direction` | flip Z direction if your machine moves the wrong way |
 
-Restart the app after editing the file. From the command line: `omni-autofocus config show`,
+Out-of-range values are refused with a message. Settings are read again on every Autofocus; only a
+new `app.hotkey` needs a restart of the app. From the command line: `omni-autofocus config show`,
 `omni-autofocus config set focus.offset_mm 0.3`.
 
 ## Command line
@@ -133,9 +142,10 @@ omni-autofocus app                  # open the Omni Autofocus window
 omni-autofocus --simulate focus     # try everything against a built-in simulated laser
 ```
 
-`-y` skips confirmation, `--lens a|b` picks the lens, `-v`/`-vv` add logging and raw USB frame dumps.
-Exit codes: 0 in focus, 1 error or cancelled, 2 refused (out of range, safety limit), 3 moved but
-still more than 0.5 mm from focus.
+`-y` (after the command) skips confirmation. `--lens a|b`, `--simulate`, `--config FILE` and
+`-v`/`-vv` (logging, raw USB frame dumps) go before the command: `omni-autofocus --lens a focus`.
+Exit codes: 0 in focus, 1 error or cancelled, 2 refused or stopped (out of range, safety limit, Z did
+not follow a move), 3 moved but still more than 0.5 mm from focus.
 
 To set a lens's focus height by hand: `set-focus 222.5` (a value, e.g. from the card),
 `set-focus --here` (the current Z is best focus), `set-focus --factory` (back to the laser's value).
@@ -156,6 +166,7 @@ Each shows old → new and asks before saving.
 
 ## For LightBurn and other developers
 
+* Source: [https://github.com/srm985/omni-xe-autofocus](https://github.com/srm985/omni-xe-autofocus).
 * How it works, byte by byte: [docs/protocol.md](docs/protocol.md).
 * Everything LightBurn would need to add native autofocus: [docs/lightburn-kit/](docs/lightburn-kit/).
 
