@@ -170,9 +170,9 @@ class Session:
             log.info("no ComMarker Studio settings: %s", e)
         raise ControllerError(
             "no focus calibration found: the laser's stored calibration could not be read and "
-            "ComMarker Studio is not installed. Is the laser on and connected? Otherwise run "
-            "'omni-autofocus config init' and enter the focus heights from the card that came with the "
-            "machine as focus.target_a_mm / focus.target_b_mm."
+            "ComMarker Studio is not installed. Is the laser on and connected? Otherwise enter the focus "
+            "heights from the card that came with the machine: ⋯ → Settings in the app, or "
+            "'omni-autofocus config init' then 'omni-autofocus set-focus VALUE'."
         )
 
     def settings(self, *, calibrate: bool = False, accept=None) -> tuple[config.Settings, str | None]:

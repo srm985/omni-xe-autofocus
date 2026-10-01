@@ -10,6 +10,10 @@ First public release. Verified on a ComMarker Omni Xe 6W (BSL controller, USB `0
   (Ctrl+Alt+F, configurable as `app.hotkey`); light and dark theme following Windows
 - lens picker (Auto / A / B; Auto follows the LightBurn profile), height check, USB driver check,
   start with Windows, remembers its position
+- Settings in the window: focus heights per lens (type, use the current height, or restore the
+  laser's factory value), hotkey (applies at once), finish sound, the down-move question threshold,
+  focus nudge, and the Z direction switch; values are checked before saving
+- messages no longer send app users to the command line
 - fine-tuning with test burns in the window: big step display, Next button or the hotkey from
   LightBurn, pick the best marks, save; Stop returns Z to focus at any step
 - moving up never asks; a move down of more than 10 mm (`app.confirm_down_above_mm`) asks first, with

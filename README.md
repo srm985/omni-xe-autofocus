@@ -75,7 +75,7 @@ sizes come from your laser's calibration). The line under the picker says which 
 | Always on top | Keep the window above LightBurn. |
 | Start with Windows | Start Omni Autofocus when you log in. |
 | Check USB driver | Diagnoses the laser's USB connection and helps install the driver. |
-| Open settings file | Opens the settings in your text editor (see [Settings](#settings)). |
+| Settings | Focus heights, hotkey, sounds, confirmation threshold, focus nudge, Z direction (see [Settings](#settings)). |
 | About | Version, credit and licence. |
 
 ## Fine-tuning focus
@@ -116,8 +116,21 @@ driver. You can keep Studio installed; just close it while using the laser.
 
 ## Settings
 
-Settings live in `%APPDATA%\omni-autofocus\config.toml`, created on first use from the calibration
-stored in your laser. Values are **sensor readings at best focus**, not lens-to-work distances.
+**⋯ → Settings** covers everything you normally need, right in the window:
+
+* **Focus heights** for each lens, as sensor readings at best focus (not lens-to-work distances).
+  Type a value (e.g. from the card that came with the machine), press **Use current** to take the
+  height Z is at now (only when Z is at best focus for that lens), or **Factory** to read the value
+  stored in the laser.
+* **Behavior:** the hotkey (empty turns it off), how large a move down asks first, a focus nudge
+  (`focus.offset_mm`, added on top of the focus height), and the finish sound.
+* **Machine:** *Z moves the wrong way*, only if autofocus reported that Z moved the opposite way.
+
+**Save** checks every value and changes only the settings file on this PC, never the laser. A new
+hotkey works at once. **Open the settings file** at the bottom gives you everything else.
+
+The file is `%APPDATA%\omni-autofocus\config.toml`, created on first use from the calibration
+stored in your laser:
 
 | key | meaning |
 |---|---|
@@ -132,14 +145,14 @@ stored in your laser. Values are **sensor readings at best focus**, not lens-to-
 | `app.sounds` | chime when autofocus finishes (default `true`) |
 | `z_axis.invert_direction` | flip Z direction if your machine moves the wrong way |
 
-Out-of-range values are refused with a message. Settings are read again on every Autofocus; only a
-new `app.hotkey` needs a restart of the app. From the command line: `omni-autofocus config show`,
-`omni-autofocus config set focus.offset_mm 0.3`.
+Out-of-range values are refused with a message. Settings are read again on every Autofocus; after
+editing `app.hotkey` in the file (rather than in Settings), restart the app. From the command line:
+`omni-autofocus config show`, `omni-autofocus config set focus.offset_mm 0.3`.
 
 ## Command line
 
-The installer also puts `omni-autofocus.exe` next to the app (the Start-menu entry *Check the
-laser's USB driver* uses it). Double-clicking it runs `focus` in a console window.
+Everything above works without it, but the installer also puts `omni-autofocus.exe` next to the
+app for scripts and power users. Double-clicking it runs `focus` in a console window.
 
 ```bash
 omni-autofocus focus                # measure, confirm, move Z, re-check

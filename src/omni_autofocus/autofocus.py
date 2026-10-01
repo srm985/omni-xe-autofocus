@@ -114,8 +114,9 @@ def check_motion(move_mm: float, change_mm: float, *, inverted: bool = False, st
     )
     if wrong_way:
         raise MotionError(
-            msg + ". If Z moved the opposite way, open the settings file (in the app: ... menu > Open "
-            f"settings file) and set z_axis.invert_direction = {str(not inverted).lower()}"
+            msg + '. If Z moved the opposite way, switch "Z moves the wrong way" '
+            f"{'off' if inverted else 'on'} in the app (... → Settings), or run 'omni-autofocus config set "
+            f"z_axis.invert_direction {str(not inverted).lower()}'"
         )
     raise MotionError(msg + " (stall, end of travel, or wrong z_axis pitch settings)")
 

@@ -311,6 +311,7 @@ class App:
         self._verified_axis = None  # z_axis settings Z was last seen to follow
         self._quiet_until = 0.0
         self.tune: dict | None = None  # fine-tuning state while its view is open
+        self.settings_open = False
 
         self.root = tk.Tk()
         self.title = window_title(simulate)
@@ -355,6 +356,7 @@ class App:
         self.main_part = main = tk.Frame(body, bg=p.bg)  # Autofocus view
         main.pack(fill="x")
         self.tune_part = tk.Frame(body, bg=p.bg)  # fine-tuning view, swapped in by open_fine_tune
+        self.settings_part = tk.Frame(body, bg=p.bg)  # settings view, swapped in by open_settings_view
         self.button = ui.RoundButton(
             main, text="Autofocus", command=self.autofocus, palette=p, scale=sc, width=self.WIDTH, height=46,
             guard=self._key_allowed,
@@ -380,9 +382,10 @@ class App:
         self.lens_info = tk.Label(main, text=" ", bg=p.bg, fg=p.muted, font=(font, 8), anchor="w")
         self.lens_info.pack(fill="x", pady=(int(8 * sc), 0))
         self._build_tune(self.tune_part, p, sc, wrap, font)
+        self._build_settings(self.settings_part, p, sc, wrap, font)
         # Same width in both views, so the window does not jump when fine-tuning opens or closes.
         self.root.update_idletasks()
-        inner = max(self.main_part.winfo_reqwidth(), self.tune_part.winfo_reqwidth())
+        inner = max(part.winfo_reqwidth() for part in (self.main_part, self.tune_part, self.settings_part))
         self.root.minsize(inner + 2 * int(20 * sc), 0)
 
         self.on_top = tk.BooleanVar(value=self.state.get("on_top", True) is not False)
@@ -398,8 +401,8 @@ class App:
             label="Start with Windows", variable=self.autostart, command=self._toggle_autostart
         )
         menu.add_separator()
+        menu.add_command(label="Settings…", command=self.open_settings_view)
         menu.add_command(label="Check USB driver…", command=self.check_driver)
-        menu.add_command(label="Open settings file", command=self.open_settings)
         menu.add_command(label="About", command=self.about)
         self.menu = menu
         for seq in ("<Button-1>", "<space>", "<Return>"):
@@ -435,6 +438,7 @@ class App:
             self.hotkey.stop()
         if self.tune is not None:
             self._close_tune()
+        self.settings_open = False  # unsaved settings are discarded
         _save_state(
             {
                 "x": self.root.winfo_x(),
@@ -497,9 +501,12 @@ class App:
 
     # -- worker plumbing ------------------------------------------------------------------------------
 
-    def _start(self, job, *args, moves: bool = False, tune: bool = False) -> None:
+    def _start(self, job, *args, moves: bool = False, tune: bool = False, settings: bool = False) -> None:
         if self.busy:
             self._set_detail("Still working on the last request…")
+            return
+        if self.settings_open and not settings and job != self._prepare_quietly:
+            self._set_detail("Save or cancel Settings first.")
             return
         if self.tune is not None and not tune:
             self._set_detail("Finish or stop fine-tuning first.")
@@ -558,6 +565,8 @@ class App:
             self._set_detail(event[1])
         elif kind == "lens":
             self.lens_info.configure(text=event[1])
+        elif kind == "settings_value" and self.settings_open:
+            self._set_entry(self.s_heights[event[1]], event[2])
         elif kind == "lens_labels":
             self.lens_picker.relabel(event[1])
         elif kind == "app":
@@ -571,6 +580,10 @@ class App:
         elif kind == "beep":
             if self.app_settings.sounds:
                 _beep(event[1])
+        elif kind == "hotkey" and self.settings_open:
+            self._set_detail("Save or cancel Settings first.")
+            if self.app_settings.sounds:
+                _beep(False)
         elif kind == "hotkey":
             if self.tune is None:
                 self.autofocus()
@@ -615,13 +628,15 @@ class App:
             self.lens_picker.set_enabled(True)
             self._set_dot(self._tone)
             self.t_button.set_enabled(True)
-            if self.tune is None:
+            if self.settings_open:
+                target = self.s_save
+            elif self.tune is None:
                 target = self.button
             elif self.tune["stage"] == "result":
                 target = self.t_save if self.t_save.enabled else self.t_stop
             else:
                 target = self.t_button
-            if self.root.focus_get() in (None, self.button, self.t_button, self.t_save):
+            if self.root.focus_get() in (None, self.button, self.t_button, self.t_save, self.s_save):
                 target.focus_set()
             if self._lens_dirty:  # the lens was changed while busy: refresh the lens line now
                 self._lens_dirty = False
@@ -1116,6 +1131,242 @@ class App:
     def _on_plan(self, i: int, p: autofocus.FocusPlan) -> None:
         self._post("detail", f"Height {p.height_mm:.1f} mm · focus {p.target_mm:.1f} mm")
 
+    # -- settings view (UI thread unless noted) ------------------------------------------------------------
+
+    def _build_settings(self, parent, p, sc: float, wrap: int, font: str) -> None:
+        import tkinter as tk
+
+        from . import ui
+
+        def heading(text: str) -> None:
+            tk.Label(parent, text=text, bg=p.bg, fg=p.muted, font=(font, 8, "bold"), anchor="w").pack(
+                fill="x", pady=(int(10 * sc), int(3 * sc))
+            )
+
+        def row() -> tk.Frame:
+            r = tk.Frame(parent, bg=p.bg)
+            r.pack(fill="x", pady=int(2 * sc))
+            return r
+
+        def label(r, text: str, **kw) -> tk.Label:
+            lbl = tk.Label(r, text=text, bg=p.bg, fg=kw.pop("fg", p.text), font=(font, 9), anchor="w", **kw)
+            lbl.pack(side="left")
+            return lbl
+
+        def entry(r, width: int, justify: str = "right") -> tk.Entry:
+            e = tk.Entry(
+                r, width=width, bg=p.bg, fg=p.text, insertbackground=p.text, relief="flat", font=(font, 9),
+                justify=justify, highlightthickness=1, highlightbackground=p.border, highlightcolor=p.accent,
+            )  # fmt: skip
+            e.pack(side="left", padx=(int(4 * sc), int(2 * sc)), ipady=int(2 * sc))
+            return e
+
+        def link(r, text: str, command, side: str = "right") -> tk.Label:
+            lbl = tk.Label(r, text=text, bg=p.bg, fg=p.accent, font=(font, 8, "underline"), cursor="hand2")
+            lbl.configure(takefocus=1, highlightthickness=2, highlightbackground=p.bg)
+            ui.focus_ring(lbl, p.text, lambda: p.bg)
+            for seq in ("<Button-1>", "<space>", "<Return>"):
+                lbl.bind(seq, lambda e: command())
+            lbl.pack(side=side, padx=(int(6 * sc), 0))
+            return lbl
+
+        def check(text: str, var) -> tk.Checkbutton:
+            c = tk.Checkbutton(
+                parent, text=text, variable=var, bg=p.bg, fg=p.text, activebackground=p.bg,
+                activeforeground=p.text, selectcolor=p.bg, highlightthickness=0, font=(font, 9), anchor="w",
+            )  # fmt: skip
+            c.pack(fill="x")
+            return c
+
+        heading("FOCUS HEIGHTS · sensor reading at best focus")
+        self.s_names: dict[str, tk.Label] = {}
+        self.s_heights: dict[str, tk.Entry] = {}
+        for letter in "AB":
+            r = row()
+            self.s_names[letter] = label(r, " ", width=11)
+            self.s_heights[letter] = entry(r, 7)
+            label(r, "mm", fg=p.muted)
+            link(r, "Factory", lambda x=letter: self._settings_factory(x))
+            link(r, "Use current", lambda x=letter: self._settings_here(x))
+
+        heading("BEHAVIOR")
+        r = row()
+        label(r, "Hotkey")
+        self.s_hotkey = entry(r, 14, justify="left")
+        label(r, "empty = off", fg=p.muted)
+        r = row()
+        label(r, "Ask before moving down more than")
+        self.s_confirm = entry(r, 4)
+        label(r, "mm", fg=p.muted)
+        r = row()
+        label(r, "Focus nudge (offset)")
+        self.s_offset = entry(r, 5)
+        label(r, "mm", fg=p.muted)
+        self.s_sounds = tk.BooleanVar(value=True)
+        check("Sound when autofocus finishes", self.s_sounds)
+
+        heading("MACHINE")
+        self.s_invert = tk.BooleanVar(value=False)
+        check("Z moves the wrong way (flip its direction)", self.s_invert)
+        tk.Label(
+            parent, text="Only if autofocus reported that Z moved the opposite way.", bg=p.bg, fg=p.muted,
+            font=(font, 8), anchor="w", wraplength=wrap, justify="left",
+        ).pack(fill="x")  # fmt: skip
+        r = row()
+        link(r, "Open the settings file (everything else)", self.open_settings, side="left")
+
+        self.s_save = ui.RoundButton(
+            parent, text="Save", command=self._settings_save, palette=p, scale=sc, width=self.WIDTH,
+            height=40, guard=self._key_allowed,
+        )  # fmt: skip
+        self.s_save.pack(pady=(int(12 * sc), int(4 * sc)))
+        r = tk.Frame(parent, bg=p.bg)
+        r.pack()
+        link(r, "Cancel", self._close_settings, side="top")
+
+    def open_settings_view(self) -> None:
+        if self.busy or self.tune is not None:
+            self._set_detail("Wait for the current task to finish, then open Settings.")
+            return
+        path = self._session.path
+        try:
+            stored = config.load(path) if path.exists() else None
+        except (OSError, ValueError) as e:
+            self._set_status("Settings file problem", ERR)
+            self._set_detail(f"{e}. Fix it in the file (⋯ → Settings → Open the settings file) or delete it.")
+            return
+        s = stored or config.Settings()
+        for letter, key in (("A", "target_a_mm"), ("B", "target_b_mm")):
+            self.s_names[letter].configure(text=lens_name(letter, s.focus))
+            self._set_entry(self.s_heights[letter], f"{getattr(s.focus, key):.1f}" if stored else "")
+        self._set_entry(
+            self.s_hotkey, "+".join(k.strip().title() for k in s.app.hotkey.split("+") if k.strip())
+        )
+        self._set_entry(self.s_confirm, f"{s.app.confirm_down_above_mm:g}")
+        self._set_entry(self.s_offset, f"{s.focus.offset_mm:g}")
+        self.s_sounds.set(s.app.sounds)
+        self.s_invert.set(s.z_axis.invert_direction)
+        self.settings_open = True
+        self.main_part.pack_forget()
+        self.settings_part.pack(fill="x")
+        self._set_status("Settings", INFO)
+        self._set_detail(
+            "Saved on this PC only; the laser itself is never changed."
+            if stored
+            else "No focus heights saved yet: press Factory to read them from the laser, or type them in."
+        )
+        self.s_save.focus_set()
+
+    @staticmethod
+    def _set_entry(e, text: str) -> None:
+        e.delete(0, "end")
+        e.insert(0, text)
+
+    def _close_settings(self) -> None:
+        if not self.settings_open:
+            return
+        self.settings_open = False
+        self.settings_part.pack_forget()
+        self.main_part.pack(fill="x")
+        self._set_status("Ready", INFO)
+        self._set_detail("Put the work piece under the head.")
+        self.button.focus_set()
+
+    def _settings_save(self) -> None:
+        if self.busy:
+            return
+        path = self._session.path
+        heights = {letter: self.s_heights[letter].get().strip() for letter in "AB"}
+        try:
+            base = config.load(path) if path.exists() else None
+            if base is None and not all(heights.values()):
+                raise ValueError("enter both focus heights (or press Factory) before saving")
+            s = base or config.Settings()
+            fields = [
+                ("focus.target_a_mm", heights["A"], "Focus height " + lens_name("A", s.focus)),
+                ("focus.target_b_mm", heights["B"], "Focus height " + lens_name("B", s.focus)),
+                ("focus.offset_mm", self.s_offset.get().strip() or "0", "Focus nudge"),
+                ("app.confirm_down_above_mm", self.s_confirm.get().strip(), "Ask before moving down"),
+                ("app.hotkey", self.s_hotkey.get().strip().lower(), "Hotkey"),
+                ("app.sounds", "true" if self.s_sounds.get() else "false", "Sound"),
+                ("z_axis.invert_direction", "true" if self.s_invert.get() else "false", "Z direction"),
+            ]
+            for key, text, what in fields:
+                if key.startswith("focus.target") and text == "":
+                    continue
+                try:
+                    s = config.set_value(s, key, text)
+                except ValueError as e:
+                    msg = str(e)
+                    if "could not convert" in msg or "invalid literal" in msg:
+                        msg = f"{text!r} is not a number"
+                    raise ValueError(f"{what}: {msg}") from None
+            f = s.focus
+            for letter, value in (("A", f.target_a_mm), ("B", f.target_b_mm)):
+                if not f.sensor_min_mm <= value <= f.sensor_max_mm:
+                    raise ValueError(
+                        f"the {lens_name(letter, f)} focus height must be between {f.sensor_min_mm:g} and "
+                        f"{f.sensor_max_mm:g} mm (a sensor reading, not a distance to the work)"
+                    )
+            config.save(s, path)
+        except (OSError, ValueError) as e:
+            msg = str(e)
+            self._set_status("Not saved", ERR)
+            self._set_detail(msg[0].upper() + msg[1:] + ".")
+            return
+        old_hotkey = self.app_settings.hotkey
+        self._close_settings()
+        self._set_status("Settings saved", OK)
+        self._set_detail("They apply from the next Autofocus.")
+        if s.app.hotkey != old_hotkey:
+            self._rebind_hotkey(s.app)
+        self._start(self._prepare_quietly)
+
+    def _rebind_hotkey(self, app_settings: config.AppSettings) -> None:
+        """Swap the global hotkey for a new one without restarting the app."""
+        if self.hotkey:
+            self.hotkey.stop()
+            self.hotkey.join(1.0)
+            self.hotkey = None
+        self.hotkey_text = ""
+        if not self.simulate:
+            self.hint.configure(text=" ")
+        self._hotkey_tried = False
+        self._apply_app_settings(app_settings)
+
+    def _settings_here(self, letter: str) -> None:
+        self._start(self._read_here, letter, settings=True)
+
+    def _settings_factory(self, letter: str) -> None:
+        self._start(self._read_factory, letter, settings=True)
+
+    # worker thread ----------------------------------------------------------------------------------
+
+    def _read_here(self, letter: str) -> None:
+        self._session.check_other_software()
+        self._post("status", "Measuring…", BUSY)
+        path = self._session.path
+        samples = (config.load(path) if path.exists() else config.Settings()).focus.samples
+        dev, ctl = self._session.open()
+        with dev:
+            h = ctl.read_height_median(max(samples, 5))
+        self._post("settings_value", letter, f"{h:.1f}")
+        self._post("status", "Settings", INFO)
+        self._post(
+            "detail", f"Measured {h:.1f} mm. Use this only with Z at best focus for that lens; then Save."
+        )
+
+    def _read_factory(self, letter: str) -> None:
+        self._session.check_other_software()
+        self._post("status", "Reading the laser…", BUSY)
+        dev, ctl = self._session.open()
+        with dev:
+            factory = config.from_commarker(session.read_laser_calibration(ctl)).focus
+        value = factory.target_b_mm if letter == "B" else factory.target_a_mm
+        self._post("settings_value", letter, f"{value:.1f}")
+        self._post("status", "Settings", INFO)
+        self._post("detail", f"Factory value from the laser: {value:.1f} mm. Press Save to use it.")
+
     def check_driver(self) -> None:
         from . import driver
 
@@ -1129,7 +1380,9 @@ class App:
             return
         installers = driver.find_installers()
         installer = installers[0] if installers else None
-        lines = driver.guidance(diag, staged=driver.driver_staged(), installer=installer)
+        lines = driver.guidance(
+            diag, staged=driver.driver_staged(), installer=installer, check_again=driver.CHECK_AGAIN_APP
+        )
         text = diag.message + "\n\n" + "\n".join(lines)
         if installer and self._ask_yes_no(text + f"\n\nRun {installer.name} now?"):
             self._start(self._run_driver_installer, installer)

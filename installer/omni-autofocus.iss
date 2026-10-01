@@ -44,7 +44,6 @@ Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"
 
 [Icons]
 Name: "{group}\Omni Autofocus"; Filename: "{app}\OmniAutofocus.exe"
-Name: "{group}\Check the laser's USB driver"; Filename: "{app}\omni-autofocus.exe"; Parameters: "driver"
 Name: "{autodesktop}\Omni Autofocus"; Filename: "{app}\OmniAutofocus.exe"; Tasks: desktopicon
 
 [Registry]

@@ -95,7 +95,13 @@ def diagnose(devices: list[UsbDevice]) -> Diagnosis:
     )
 
 
-def guidance(diag: Diagnosis, *, staged: bool, installer: Path | None) -> list[str]:
+CHECK_AGAIN_CLI = "Run 'omni-autofocus driver' again to check."
+CHECK_AGAIN_APP = "Then use ⋯ → Check USB driver again to check."
+
+
+def guidance(
+    diag: Diagnosis, *, staged: bool, installer: Path | None, check_again: str = CHECK_AGAIN_CLI
+) -> list[str]:
     """What the user should do next, as lines of text."""
     if diag.state in (State.OK, State.NO_LASER):
         return []
@@ -125,7 +131,7 @@ def guidance(diag: Diagnosis, *, staged: bool, installer: Path | None) -> list[s
             "Then unplug and replug the laser's USB cable. ComMarker Studio can stay installed;",
             "just close it while using this tool.",
         ]
-    steps.append("Run 'omni-autofocus driver' again to check.")
+    steps.append(check_again)
     return steps
 
 
@@ -134,10 +140,13 @@ def no_device_message() -> str:
     try:
         diag = diagnose(usb_devices())
     except (OSError, UsbError):
-        return "No ComMarker/BSL laser found. Run 'omni-autofocus driver' to check the USB driver."
+        return (
+            "No ComMarker/BSL laser found. Check the USB driver: ⋯ → Check USB driver in the app, or "
+            "'omni-autofocus driver'."
+        )
     if diag.state in (State.OK, State.NO_LASER):
         return diag.message
-    return diag.message + " Run 'omni-autofocus driver' for help installing it."
+    return diag.message + " For help: ⋯ → Check USB driver in the app, or 'omni-autofocus driver'."
 
 
 # --- where the driver can come from ---------------------------------------------------------------

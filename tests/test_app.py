@@ -444,3 +444,93 @@ def test_picker_shows_lens_sizes_with_the_letters(window):
     assert texts == ["Auto", "70 mm (A)", "150 mm (B)"]
     focus = config.FocusSettings(field_a_mm=110.0, field_b_mm=200.0)
     assert app.lens_labels(focus) == {"Auto": "Auto", "A": "110 mm (A)", "B": "200 mm (B)"}
+
+
+# --- settings in the window ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def settings_window(window):
+    path = window._session.path
+    saved = path.read_text(encoding="utf-8") if path.exists() else None
+    yield window
+    window._close_settings()
+    if saved is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_text(saved, encoding="utf-8")
+
+
+def test_settings_view_edits_and_saves(settings_window):
+    w = settings_window
+    w.open_settings_view()
+    assert w.settings_open and w.s_heights["B"].get() == "222.0" and w.s_offset.get() == "0"
+    w.autofocus()  # paused while Settings is open
+    assert "Save or cancel Settings first" in w.detail.cget("text")
+    w._set_entry(w.s_offset, "0.3")
+    w._set_entry(w.s_confirm, "15")
+    w.s_invert.set(True)
+    w._settings_save()
+    settle(w)
+    saved = config.load(w._session.path)
+    assert saved.focus.offset_mm == 0.3 and saved.app.confirm_down_above_mm == 15.0
+    assert saved.z_axis.invert_direction and not w.settings_open
+    assert w.status.cget("text") == "Settings saved"
+
+
+def test_settings_view_rejects_bad_values_and_keeps_the_file(settings_window):
+    w = settings_window
+    before = w._session.path.read_text(encoding="utf-8")
+    for entry, text, expect in (
+        (w.s_offset, "abc", "'abc' is not a number"),
+        (w.s_heights["B"], "35", "between 120 and 280 mm"),
+        (w.s_hotkey, "ctrl+", "Hotkey"),
+        (w.s_confirm, "500", "out of range"),
+    ):
+        w.open_settings_view()
+        w._set_entry(entry, text)
+        w._settings_save()
+        assert w.settings_open and w.status.cget("text") == "Not saved", text
+        assert expect in w.detail.cget("text"), (text, w.detail.cget("text"))
+        w._close_settings()
+    assert w._session.path.read_text(encoding="utf-8") == before
+
+
+def test_settings_factory_and_current_height_fill_the_fields(settings_window):
+    w = settings_window
+    board = board_of(w)
+    w.open_settings_view()
+    w._set_entry(w.s_heights["A"], "")
+    w._settings_factory("A")
+    settle(w)
+    assert w.s_heights["A"].get() == "181.0" and "Factory value" in w.detail.cget("text")
+    board.sensor_mm = 223.4
+    w._settings_here("B")
+    settle(w)
+    assert w.s_heights["B"].get() == "223.4"
+    board.sensor_mm = 205.0
+
+
+def test_settings_without_a_file_need_both_heights(settings_window):
+    w = settings_window
+    w._session.path.unlink()
+    w.open_settings_view()
+    assert w.s_heights["A"].get() == "" and "No focus heights saved yet" in w.detail.cget("text")
+    w._settings_save()
+    assert "enter both focus heights" in w.detail.cget("text").lower()
+    w._settings_factory("A")
+    settle(w)
+    w._settings_factory("B")
+    settle(w)
+    w._settings_save()
+    settle(w)
+    assert config.load(w._session.path).focus.target_b_mm == 222.0
+
+
+def test_driver_guidance_in_the_app_points_to_the_menu():
+    from omni_autofocus import driver
+    from omni_autofocus.driver import UsbDevice
+
+    diag = driver.diagnose([UsbDevice((r"USB\VID_04B4&PID_1004",), "x", "", 28)])
+    lines = driver.guidance(diag, staged=True, installer=None, check_again=driver.CHECK_AGAIN_APP)
+    assert lines[-1].startswith("Then use ⋯ → Check USB driver") and "omni-autofocus" not in " ".join(lines)
