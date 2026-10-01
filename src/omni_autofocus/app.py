@@ -475,8 +475,18 @@ class App:
         except (OSError, ValueError):
             return config.FocusSettings()
 
+    # Menu entries that start a task or open another view: greyed out while Settings or fine-tuning is
+    # open, or a task runs, since they could not start then. On top / startup / About always work.
+    TASK_ENTRIES = ("Check height", "Fine-tune focus (test burns)…", "Settings…", "Check USB driver…")
+
+    def _update_menu(self) -> None:
+        free = not (self.busy or self.settings_open or self.tune is not None)
+        for label in self.TASK_ENTRIES:
+            self.menu.entryconfigure(label, state="normal" if free else "disabled")
+
     def _show_menu(self) -> None:
         m = self.more
+        self._update_menu()
         self.menu.update_idletasks()
         x = m.winfo_rootx() + m.winfo_width() - self.menu.winfo_reqwidth()
         self.menu.tk_popup(x, m.winfo_rooty() + m.winfo_height())

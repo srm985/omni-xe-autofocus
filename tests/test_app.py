@@ -698,6 +698,30 @@ def test_settings_blocks_fine_tuning(settings_window):
     assert w.tune is None and w.settings_open
 
 
+def test_menu_greys_out_what_cannot_start_in_the_current_view(settings_window):
+    w = settings_window
+
+    def check(free: bool) -> None:
+        w._update_menu()
+        state = {label: str(w.menu.entrycget(label, "state")) for label in w.TASK_ENTRIES}
+        assert set(state.values()) == {"normal" if free else "disabled"}, state
+        assert str(w.menu.entrycget("Always on top", "state")) == "normal"
+        assert str(w.menu.entrycget("About", "state")) == "normal"
+
+    check(free=True)
+    w.open_settings_view()
+    check(free=False)
+    w._close_settings()
+    check(free=True)
+    w.open_fine_tune()
+    check(free=False)
+    w._close_tune()
+    w.busy = True  # a task running in the main view
+    check(free=False)
+    w.busy = False
+    check(free=True)
+
+
 def test_settings_check_height_plus_nudge(settings_window):
     w = settings_window
     w.open_settings_view()
