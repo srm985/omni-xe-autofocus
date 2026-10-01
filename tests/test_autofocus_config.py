@@ -209,16 +209,67 @@ def json_copy(obj):
     return json.loads(json.dumps(obj))
 
 
-def test_cli_focus_ladder_visits_offsets_and_returns(monkeypatch, capsys):
+def scripted(answers: dict):
+    """A _prompt replacement answering by keyword; burn prompts get Enter."""
+    seen = []
+
+    def prompt(text):
+        seen.append(text)
+        for key, value in answers.items():
+            if key in text:
+                return value
+        return ""
+
+    return prompt, seen
+
+
+def test_cli_focus_ladder_default_range_ascending_and_returns(monkeypatch, capsys):
     from omni_autofocus import cli
 
-    prompts = []
-    monkeypatch.setattr(cli, "_prompt", lambda text: prompts.append(text) or "")
+    prompt, seen = scripted({"Lowest": ""})
+    monkeypatch.setattr(cli, "_prompt", prompt)
     assert cli.main(["--simulate", "--lens", "b", "focus-ladder", "--yes"]) == 0
     out = capsys.readouterr().out
-    labels = [p.split("labelled '")[1].split("'")[0] for p in prompts]
-    assert labels == ["+0", "-1", "-2", "+1", "+2"]
-    assert "Returning Z to the autofocus height (-2 mm)" in out
+    labels = [p.split("labelled '")[1].split("'")[0] for p in seen if "labelled" in p]
+    assert labels == ["-4", "-3", "-2", "-1", "+0", "+1", "+2", "+3", "+4"]
+    assert "Returning Z to the autofocus height (-4 mm)" in out
+    assert "No result saved" in out
+
+
+def test_cli_focus_ladder_dials_in_and_saves(monkeypatch, capsys, tmp_path):
+    from omni_autofocus import cli
+
+    cfg = tmp_path / "dial.toml"
+    prompt, _ = scripted({"Lowest": "-2", "Highest": "+3", "Save": "y"})
+    monkeypatch.setattr(cli, "_prompt", prompt)
+    assert cli.main(["--simulate", "--config", str(cfg), "--lens", "b", "focus-ladder", "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert "centre +0.5 mm" in out and "Autofocus now targets 222.5 mm for lens B" in out
+    saved = config.load(cfg)
+    assert saved.focus.target_b_mm == 222.5
+    assert saved.focus.target_a_mm == 181.0
+    assert saved.focus.lens == "auto"  # the --lens override is not persisted
+
+
+def test_cli_focus_ladder_retries_when_controller_busy(monkeypatch, capsys):
+    from omni_autofocus import cli
+    from omni_autofocus.controller import Controller, ControllerBusyError
+
+    real_move = Controller.move_axis
+    state = {"busy_once": True}
+
+    def flaky_move(self, params, pulses, **kw):
+        if state["busy_once"] and pulses < 0:
+            state["busy_once"] = False
+            raise ControllerBusyError("busy")
+        return real_move(self, params, pulses, **kw)
+
+    monkeypatch.setattr(Controller, "move_axis", flaky_move)
+    prompt, seen = scripted({"Lowest": ""})
+    monkeypatch.setattr(cli, "_prompt", prompt)
+    assert cli.main(["--simulate", "--lens", "b", "focus-ladder", "--yes", "--offsets", "0,2"]) == 0
+    assert any("controller is busy" in p for p in seen)
+    assert "Z left at" not in capsys.readouterr().out
 
 
 def test_cli_focus_ladder_stop_early_still_returns(monkeypatch, capsys):

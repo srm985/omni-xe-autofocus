@@ -14,7 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from . import __version__, autofocus, config, lens
-from .controller import Controller, ControllerError
+from .controller import Controller, ControllerBusyError, ControllerError
 
 log = logging.getLogger("omni_autofocus")
 
@@ -214,17 +214,37 @@ def _parse_offsets(text: str) -> list[float]:
     return offsets
 
 
+BACKLASH_PRETRAVEL_MM = 1.0
+
+
+def _ladder_offsets(args) -> list[float]:
+    if args.offsets:
+        return _parse_offsets(args.offsets)
+    if args.step <= 0 or args.range <= 0:
+        raise ValueError("--range and --step must be positive")
+    n = int(round(args.range / args.step))
+    return [round(i * args.step, 6) for i in range(-n, n + 1)]
+
+
 def cmd_focus_ladder(args) -> int:
-    """Autofocus, then step Z through offsets so a test mark can be burned at each height."""
+    """Autofocus, step Z through offsets for test burns, then optionally save the dialled-in focus.
+
+    Each mark is approached from below (one-directional travel) so lead-screw backlash does not skew
+    the comparison. The user reports the lowest and highest marks that still look good; the midpoint
+    of that range becomes the new focus height for the current lens.
+    """
     _check_other_software(args.force)
     s = _settings_with_lens(args)
-    offsets = _parse_offsets(args.offsets)
+    offsets = _ladder_offsets(args)
     params = s.z_axis.axis_params()
-    if max(abs(o) for o in offsets) > s.focus.max_move_mm:
+    ascending = offsets == sorted(offsets)
+    reach = max(abs(o) for o in offsets) + (BACKLASH_PRETRAVEL_MM if ascending else 0)
+    if reach > s.focus.max_move_mm:
         print(f"Offsets exceed the safety limit of {s.focus.max_move_mm:g} mm.")
         return 2
     print("Focus ladder: autofocus, then Z offsets " + ", ".join(f"{o:+g}" for o in offsets) + " mm.")
-    print("At each step, burn a small test mark in LightBurn at a new spot, then come back here.")
+    print("At each step burn the same small test design at a new spot in LightBurn, then come back here.")
+    print("Tip: use the lowest power that still marks; out-of-focus marks then fade, which shows the edges.")
     if not _confirm("Start (this moves the Z axis)?", args.yes):
         print("Cancelled.")
         return 1
@@ -233,13 +253,18 @@ def cmd_focus_ladder(args) -> int:
         code = _autofocus(ctl, s, passes=2, dry_run=False, yes=True)
         if code:
             return code
+        reference = ctl.read_height_median(s.focus.samples)
+        print(f"Reference (offset 0): sensor reading {reference:.3f} mm")
         current = 0.0
         burned: list[float] = []
         try:
+            if ascending and offsets[0] < 0:  # take up backlash: arrive at every mark moving upwards
+                _move_when_free(ctl, params, offsets[0] - BACKLASH_PRETRAVEL_MM)
+                current = offsets[0] - BACKLASH_PRETRAVEL_MM
             for offset in offsets:
                 step = offset - current
                 if step:
-                    ctl.move_axis(params, params.mm_to_pulses(step))
+                    _move_when_free(ctl, params, step)
                     current = offset
                 answer = _prompt(
                     f"\nZ is at {offset:+g} mm. Burn the mark labelled '{offset:+g}', "
@@ -251,13 +276,85 @@ def cmd_focus_ladder(args) -> int:
         finally:
             if current:
                 print(f"Returning Z to the autofocus height ({-current:+g} mm).")
-                ctl.move_axis(params, params.mm_to_pulses(-current))
-    if burned:
-        print("\nDone. Compare the marks (a loupe or phone macro photo helps) and pick the sharpest.")
-        print("If the sharpest is not '+0', add its label to focus.offset_mm in the settings file")
+                try:
+                    _move_when_free(ctl, params, -current)
+                except _LeftInPlace:
+                    print(f"Z left at {current:+g} mm from focus; run 'omni-autofocus focus' to return.")
+    if len(burned) < 2:
+        return 0
+    return _dial_in(args, s, burned, reference)
+
+
+class _LeftInPlace(Exception):
+    """The user chose not to retry a move the controller refused because it was busy."""
+
+
+def _move_when_free(ctl: Controller, params, mm: float) -> None:
+    """Move Z; if the controller is busy (job or framing preview running), ask the user and retry."""
+    while True:
+        try:
+            ctl.move_axis(params, params.mm_to_pulses(mm))
+            return
+        except ControllerBusyError:
+            answer = _prompt(
+                "\nThe controller is busy: stop any LightBurn job and close the framing/red-light "
+                "preview, then press Enter to retry (q + Enter to skip this move): "
+            )
+            if answer.strip().lower() == "q":
+                raise _LeftInPlace from None
+
+
+def _ask_label(question: str, burned: list[float]) -> float | None:
+    while True:
+        answer = _prompt(question).strip()
+        if not answer or answer.lower() == "q":
+            return None
+        try:
+            value = float(answer)
+        except ValueError:
+            value = None
+        if value is not None and any(abs(value - b) < 1e-6 for b in burned):
+            return value
+        print("Please type one of the labels: " + ", ".join(f"{b:+g}" for b in burned))
+
+
+def _dial_in(args, s: config.Settings, burned: list[float], reference: float) -> int:
+    print("\nCompare the marks with a loupe or a zoomed phone photo.")
+    print("Find the range of marks that look equally good (thin lines, even fill, full contrast).")
+    lo = _ask_label("Lowest label that still looks good (Enter to skip): ", burned)
+    hi = (
+        _ask_label("Highest label that still looks good (Enter to skip): ", burned)
+        if lo is not None
+        else None
+    )
+    if lo is None or hi is None:
+        print("No result saved.")
+        return 0
+    lo, hi = min(lo, hi), max(lo, hi)
+    if lo == burned[0] or hi == burned[-1]:
         print(
-            f"(currently {s.focus.offset_mm:g}; e.g. '+1' sharpest -> offset_mm = {s.focus.offset_mm + 1:g})."
+            "Note: the good range reaches the end of the ladder; consider a wider --range to find its edge."
         )
+    centre = (lo + hi) / 2
+    lens_key = s.focus.lens.lower()
+    new_target = round(reference + centre - s.focus.offset_mm, 1)
+    old_target = s.focus.target_b_mm if lens_key == "b" else s.focus.target_a_mm
+    print(f"Good range {lo:+g} .. {hi:+g} mm -> centre {centre:+g} mm from the autofocus height.")
+    if abs(new_target - old_target) < 0.1:
+        print(f"Lens {lens_key.upper()} focus height {old_target:.1f} mm is already centred.")
+        return 0
+    path = Path(args.config) if args.config else config.default_config_path()
+    answer = _prompt(
+        f"Save lens {lens_key.upper()} focus height {old_target:.1f} -> {new_target:.1f} mm to {path}? [y/N] "
+    )
+    if answer.strip().lower() not in ("y", "yes"):
+        print("Not saved.")
+        return 0
+    # Start from the file itself so one-off overrides (e.g. --lens) are not persisted.
+    stored = config.load(path) if path.exists() else config.Settings()
+    stored = replace(stored, focus=replace(stored.focus, **{f"target_{lens_key}_mm": new_target}))
+    config.save(stored, path)
+    print(f"Saved. Autofocus now targets {new_target:.1f} mm for lens {lens_key.upper()}.")
     return 0
 
 
@@ -324,9 +421,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_focus)
 
     sp = sub.add_parser(
-        "focus-ladder", help="autofocus, then step Z for test burns (find the sharpest height)"
+        "focus-ladder", help="dial in focus: test burns from -4 to +4 mm, then save the best height"
     )
-    sp.add_argument("--offsets", default="0,-1,-2,1,2", help="Z offsets in mm (default 0,-1,-2,1,2)")
+    sp.add_argument("--range", type=float, default=4.0, help="test from -RANGE to +RANGE mm (default 4)")
+    sp.add_argument("--step", type=float, default=1.0, help="step between marks in mm (default 1)")
+    sp.add_argument("--offsets", help="explicit comma-separated offsets instead of --range/--step")
     sp.add_argument("-y", "--yes", action="store_true", help="do not ask before starting")
     sp.set_defaults(func=cmd_focus_ladder)
 

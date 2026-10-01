@@ -10,7 +10,8 @@ First public release. Verified on a ComMarker Omni Xe 6W (BSL controller, USB `0
   Studio's lens setting), always printed; `--lens` overrides
 - median of several sensor readings per measurement (the sensor wobbles about ±0.2 mm)
 - every Z move is checked against the controller's own axis position counter
-- `focus-ladder`: guided calibration with test burns at several Z offsets, returns to focus
+- `focus-ladder`: dial in focus with test burns from -4..+4 mm (one-directional approach), then save
+  the centre of the good range as the lens focus height; asks to close LightBurn's preview if busy
 - coexists with LightBurn: restores its run state after a move, refuses to move while a job runs
 - `height`, `move-z`, `status`, `devices` and `config` commands
 - settings import from an installed ComMarker Studio (`config init --from-commarker`)

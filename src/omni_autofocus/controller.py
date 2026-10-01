@@ -41,6 +41,10 @@ class SensorNoTargetError(ControllerError):
     """The sensor replied with its "no measurement" value."""
 
 
+class ControllerBusyError(ControllerError):
+    """The controller reports unfinished work (a job or LightBurn's framing preview is running)."""
+
+
 class Controller:
     def __init__(self, transport: Transport, *, sleep=time.sleep, clock=time.monotonic):
         self.t = transport
@@ -206,8 +210,9 @@ class Controller:
             return 0
         initial = self.state()
         if not initial.finished_flag:
-            raise ControllerError(
-                "the controller is busy or has unfinished work (is a job running in LightBurn?); not moving Z"
+            raise ControllerBusyError(
+                "the controller is busy (a LightBurn job or the framing/red-light preview is running); "
+                "not moving Z"
             )
         restore_run = initial.board_state == commands.BOARD_STATE_RUN
         before = self._axis_position(params.axis_id)

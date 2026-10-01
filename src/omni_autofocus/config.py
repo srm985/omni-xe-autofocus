@@ -88,8 +88,8 @@ def load(path: Path | None = None) -> Settings:
     if path is None:
         env = os.environ.get("OMNI_AUTOFOCUS_CONFIG")
         path = Path(env) if env else default_config_path()
-        if not path.exists():
-            return Settings()
+    if not path.exists():
+        return Settings()  # a not-yet-created settings file means defaults
     with open(path, "rb") as f:
         data = tomllib.load(f)
     unknown = set(data) - {"focus", "z_axis"}

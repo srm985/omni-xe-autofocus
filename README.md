@@ -23,7 +23,7 @@ safety and accuracy improvements.
 ```bash
 omni-autofocus focus                # measure, confirm, move Z, re-check (the default when double-clicked)
 omni-autofocus focus --dry-run      # only show the planned move
-omni-autofocus focus-ladder         # calibrate: autofocus, then pause at Z -2..+2 mm for test burns
+omni-autofocus focus-ladder         # dial in focus: test burns from -4..+4 mm, saves the best height
 omni-autofocus height -n 5          # read the sensor (no motion)
 omni-autofocus move-z 2.5           # relative Z move in mm (positive = larger sensor reading)
 omni-autofocus status               # controller state and Z position counter
@@ -44,6 +44,16 @@ prints its choice on every run:
    one). With one LightBurn profile per lens, as LightBurn recommends for galvos, switching profiles
    in LightBurn switches the focus height.
 3. Otherwise ComMarker Studio's lens setting ("Galvo B").
+
+## Dialling in focus
+
+The factory focus heights are usually right (ComMarker writes them on a card that ships with the
+machine). To fine-tune, run `omni-autofocus focus-ladder` with LightBurn connected. After autofocus it
+steps Z from −4 to +4 mm, always moving up into each position so lead-screw slack does not skew
+the result, and pauses so you can burn the same small test design at each height. Use the lowest
+power that still marks: out-of-focus marks then fade, so the edges of the good range are easy to see.
+Finally it asks for the lowest and highest label that still looked good, and offers to save the
+middle of that range as the lens's new focus height.
 
 ## Settings
 
