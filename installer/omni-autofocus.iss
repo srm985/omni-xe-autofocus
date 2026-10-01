@@ -28,8 +28,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; The app holds this mutex while running; Setup asks to close it before replacing files.
-AppMutex=OmniAutofocusApp
+; A running app is asked to close first (see the Code section); this is the fallback for anything else.
 CloseApplications=yes
 
 [Tasks]
@@ -58,3 +57,53 @@ Filename: "{app}\OmniAutofocus.exe"; Description: "Open Omni Autofocus now"; Fla
 [UninstallDelete]
 Type: files; Name: "{localappdata}\omni-autofocus\app-state.json"
 Type: dirifempty; Name: "{localappdata}\omni-autofocus"
+
+[Code]
+const
+  AppMutexName = 'OmniAutofocusApp';  { held by the running app, see app.py MUTEX_NAME }
+
+{ True while any OmniAutofocus.exe runs (a one-file .exe is two processes: launcher and app). }
+function AppProcessRunning(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{cmd}'), '/C tasklist /NH /FI "IMAGENAME eq OmniAutofocus.exe" | find /I "OmniAutofocus.exe"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := ResultCode = 0;
+end;
+
+{ Ask a running app to close (like clicking its X: it refuses while Z is moving) and wait for it. }
+function CloseRunningApp(): Boolean;
+var
+  ResultCode, I: Integer;
+begin
+  Result := True;
+  if not CheckForMutexes(AppMutexName) and not AppProcessRunning() then
+    Exit;
+  Log('Omni Autofocus is running: asking it to close');
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM OmniAutofocus.exe', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+  for I := 1 to 50 do
+  begin
+    if not CheckForMutexes(AppMutexName) and not AppProcessRunning() then
+    begin
+      Log('Omni Autofocus has closed');
+      Exit;
+    end;
+    Sleep(200);
+  end;
+  Result := False;
+  Log('Omni Autofocus did not close');
+  SuppressibleMsgBox('Omni Autofocus is still running. Close it (wait for Z to stop moving), then try again.',
+    mbError, MB_OK, IDOK);
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  Result := CloseRunningApp();
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  Result := CloseRunningApp();
+end;

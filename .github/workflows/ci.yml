@@ -33,13 +33,20 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install -e ".[build]"
+      - run: choco install innosetup --no-progress -y
       - run: powershell -ExecutionPolicy Bypass -File tools/build_exe.ps1
       - uses: actions/upload-artifact@v4
         with:
-          name: omni-autofocus-exe
-          path: dist/omni-autofocus.exe
+          name: omni-autofocus-windows
+          path: |
+            dist/OmniAutofocus-Setup-*.exe
+            dist/OmniAutofocus.exe
+            dist/omni-autofocus.exe
       - if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/omni-autofocus.exe
+          files: |
+            dist/OmniAutofocus-Setup-*.exe
+            dist/OmniAutofocus.exe
+            dist/omni-autofocus.exe
           generate_release_notes: true
