@@ -5,15 +5,10 @@ machine's built-in height sensor through the laser controller and moves the moto
 focus height, using the same rules as ComMarker Studio plus a few safety and accuracy improvements.
 ComMarker Studio is not needed.
 
-> **Status:** the focusing engine and command line are verified on real hardware (Omni Xe 6W); the app
-> and installer are tested in simulation and await their hardware run. See
-> [docs/hardware-testing.md](docs/hardware-testing.md).
->
-> 
-
 https://github.com/user-attachments/assets/ea3971f7-8c9f-45ab-8335-5f9e9e3c0a30
 
-
+> **Status:** the app, installer and command line are verified on real hardware (Omni Xe 6W). See
+> [docs/hardware-testing.md](docs/hardware-testing.md).
 
 ![The Omni Autofocus window (shown in simulation)](docs/images/app.png)
 

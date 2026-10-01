@@ -1,7 +1,7 @@
 # Hardware bring-up checklist
 
-Status (2026-10-01): steps 1-9 and 12-15 pass on an Omni Xe 6W; 10, 11 and the app steps 16-20 are
-still to do (an early app build focused once on hardware, see the log). On a
+Status (2026-10-01): steps 1-9 and 11-21 pass on an Omni Xe 6W; step 10 (a LightBurn focus test) is
+still to do. On a
 new machine, go through the steps in order and stop at the first surprise. Run each command with
 `-vv` the first time so the raw USB frames are printed; save the output if anything looks wrong.
 
