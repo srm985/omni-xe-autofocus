@@ -18,6 +18,10 @@ First public release. Verified on a ComMarker Omni Xe 6W (BSL controller, USB `0
   `config init --from-laser`); no built-in focus values are used silently
 - `set-focus VALUE | --here | --factory` to set a lens's focus height by hand, by measurement
   or back to the laser's value; `config set SECTION.KEY VALUE` for any setting
+- `driver`: tells apart a missing laser, a missing driver and the wrong driver, and explains the
+  fix; offers to run ComMarker's driver installer when it is on the PC or the laser's USB stick.
+  Commands that cannot find the laser give the same diagnosis
+- Windows only for now (macOS and Linux are not supported)
 - `height`, `move-z`, `status`, `devices` and `config` commands
 - settings import from an installed ComMarker Studio (`config init --from-commarker`)
 - `--simulate` mode and a protocol-level simulator for hardware-free development

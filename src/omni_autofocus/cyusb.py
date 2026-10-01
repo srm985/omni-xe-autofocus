@@ -80,7 +80,10 @@ class _OVERLAPPED(ctypes.Structure):
 
 def _win():
     if sys.platform != "win32":
-        raise UsbError("the CYUSB transport only works on Windows")
+        raise UsbError(
+            "omni-autofocus reaches the laser through Windows' CyUSB3 driver, so it runs on Windows only "
+            "for now (macOS and Linux are not supported yet; --simulate works anywhere)"
+        )
     setupapi = ctypes.WinDLL("setupapi", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
@@ -214,9 +217,9 @@ class CyUsbDevice:
     def open_first(cls) -> CyUsbDevice:
         devices = [d for d in list_devices() if d.supported]
         if not devices:
-            raise UsbError(
-                "no ComMarker/BSL controller found (is the laser on, connected, and using the CYUSB3 driver?)"
-            )
+            from .driver import no_device_message  # imported lazily: driver imports this module
+
+            raise UsbError(no_device_message())
         if len(devices) > 1:
             log.warning("several controllers found, using %s", devices[0].path)
         return cls(devices[0].path)

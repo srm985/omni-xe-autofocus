@@ -9,6 +9,7 @@ import io
 import logging
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -138,6 +139,33 @@ def cmd_devices(args) -> int:
     for d in devices:
         print(("[supported] " if d.supported else "[other]     ") + d.path)
     return 0
+
+
+def cmd_driver(args) -> int:
+    """Check the laser's USB driver and help install it."""
+    from . import driver
+
+    diag = driver.diagnose(driver.usb_devices())
+    print(diag.message)
+    if diag.state is driver.State.OK:
+        return 0
+    if diag.state is driver.State.NO_LASER:
+        return 1
+    installers = driver.find_installers()
+    installer = installers[0] if installers else None
+    print()
+    for line in driver.guidance(diag, staged=driver.driver_staged(), installer=installer):
+        print(line)
+    if installer and _confirm(
+        f"\nRun {installer.name} now? Windows will ask for administrator permission.", args.yes
+    ):
+        code = driver.run_installer(installer)
+        print(f"The installer finished (exit code {code}). Unplug and replug the laser's USB cable.")
+        if _prompt("Press Enter when it is plugged back in (q + Enter to skip the check): ").strip() != "q":
+            after = driver.diagnose(driver.usb_devices())
+            print(after.message)
+            return 0 if after.state is driver.State.OK else 1
+    return 1
 
 
 def cmd_status(args) -> int:
@@ -535,6 +563,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("devices", help="list controllers on the CYUSB driver").set_defaults(func=cmd_devices)
 
+    sp = sub.add_parser("driver", help="check the laser's USB driver and help install it")
+    sp.add_argument("-y", "--yes", action="store_true", help="run a found driver installer without asking")
+    sp.set_defaults(func=cmd_driver)
+
     sp = sub.add_parser("status", help="read controller state (read-only)")
     sp.add_argument("--raw", action="store_true")
     sp.set_defaults(func=cmd_status)
@@ -611,6 +643,9 @@ def _run(argv: list[str] | None) -> int:
     global _SIMULATE
     args = build_parser().parse_args(argv)
     _SIMULATE = args.simulate
+    if _SIMULATE and not args.config:
+        # Never let the simulator's calibration or test runs touch the real settings file.
+        args.config = str(Path(tempfile.gettempdir()) / "omni-autofocus-simulate.toml")
     level = logging.WARNING if args.verbose == 0 else logging.INFO if args.verbose == 1 else logging.DEBUG
     logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
     try:

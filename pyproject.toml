@@ -9,6 +9,7 @@ description = "Standalone autofocus helper for the ComMarker Omni Xe (BSL contro
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
+classifiers = ["Operating System :: Microsoft :: Windows"]
 dependencies = []  # runtime uses only the standard library (ctypes)
 
 [project.optional-dependencies]

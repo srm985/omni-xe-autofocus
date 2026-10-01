@@ -8,11 +8,18 @@ safety and accuracy improvements.
 > **Status:** working on real hardware (Omni Xe 6W). See
 > [docs/hardware-testing.md](docs/hardware-testing.md) for what has been verified.
 
+## Requirements
+
+* **Windows 10 or 11.** macOS and Linux are not supported yet: the tool reaches the laser through a
+  Windows USB driver. (`--simulate` runs anywhere, for development.)
+* **Cypress's CyUSB3 USB driver** for the laser, which shows up in Device Manager as "Cypress FX2LP
+  Sample Device". LightBurn needs the same driver for this laser, so if LightBurn already talks to
+  your Omni, you have it. See [USB driver](#usb-driver) if not.
+* ComMarker Studio is **not** needed (though its installer is the usual way to get the driver).
+
 ## Quick start (no Python needed)
 
-1. The laser needs Cypress's CyUSB3 USB driver (it shows up as "Cypress FX2LP Sample Device").
-   LightBurn needs the same driver for this laser, so if LightBurn already talks to it, you have it.
-   ComMarker Studio's installer is one way to get it. ComMarker Studio itself is not needed.
+1. Check the driver: run `omni-autofocus driver` (or see [USB driver](#usb-driver)).
 2. Download `omni-autofocus.exe` from the Releases page.
 3. Put your work piece under the head and **close ComMarker Studio**. LightBurn can stay open (see
    [Using it with LightBurn](#using-it-with-lightburn)).
@@ -28,12 +35,30 @@ omni-autofocus focus-ladder         # dial in focus: test burns from -4..+4 mm, 
 omni-autofocus height -n 5          # read the sensor (no motion)
 omni-autofocus move-z 2.5           # relative Z move in mm (positive = larger sensor reading)
 omni-autofocus status               # controller state and Z position counter
+omni-autofocus driver               # check the laser's USB driver and help install it
 omni-autofocus calibration          # show the factory calibration stored in the laser
 omni-autofocus set-focus --here     # make the current Z height this lens's focus (also: VALUE, --factory)
 omni-autofocus --simulate focus     # try everything against a built-in simulator
 ```
 
 `-y` skips confirmation, `--lens a|b` picks the lens, `-v`/`-vv` add logging and raw USB frame dumps.
+
+## USB driver
+
+`omni-autofocus driver` checks the laser's USB connection and says what to do:
+
+* **Laser found, using the CyUSB3 driver**: nothing to do.
+* **Connected but no driver**: if Windows already has the driver (for example from an earlier
+  ComMarker Studio install), unplug and replug the USB cable. If ComMarker's driver installer
+  (`CypressDriverInstaller.exe`) is on this PC or on the USB stick that came with the laser, the
+  command offers to run it (Windows asks for administrator permission).
+* **Connected with a different driver** (e.g. WinUSB after using Zadig): switch it back in Device
+  Manager > Update driver > Browse my computer > Let me pick > "Cypress FX2LP Sample Device".
+
+The driver's licence lets only hardware makers redistribute it, so this tool cannot include it.
+**Fallback that always works:** install ComMarker Studio for Windows from
+[ComMarker's download center](https://commarker.com/download-center). Its installer includes the
+driver. You can keep Studio installed; just close it while using this tool or LightBurn.
 
 ## Lenses
 
@@ -120,9 +145,9 @@ Exit codes for scripts: 0 in focus, 1 error or cancelled, 2 refused (out of rang
   Z buttons and try again.
 * **"counter moved … expected …"**: the controller did not execute the full move (stall, limit).
   Check the Z axis mechanically before trying again.
-* **No device found**: check the USB cable and power, and that the laser uses the CyUSB3 driver
-  (Device Manager shows "Cypress FX2LP Sample Device"). `omni-autofocus devices` lists what the
-  driver sees.
+* **No laser found / driver problems**: run `omni-autofocus driver`; it tells apart a missing laser,
+  a missing driver and the wrong driver (see [USB driver](#usb-driver)). If all else fails, install
+  ComMarker Studio, which includes the driver.
 
 ## How it works
 

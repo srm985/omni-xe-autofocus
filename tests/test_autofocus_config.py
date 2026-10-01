@@ -362,3 +362,13 @@ def test_config_set_values_and_validation(tmp_path):
     assert s.focus.offset_mm == 0.3 and s.z_axis.invert_direction is True and s.focus.lens == "a"
     assert run("--config", str(cfg), "config", "set", "focus.offset", "1") == 1  # typo -> error
     assert run("--config", str(cfg), "config", "set", "focus.lens", "c") == 1
+
+
+def test_simulate_never_writes_the_real_settings_file(tmp_path, monkeypatch):
+    from omni_autofocus import cli
+
+    monkeypatch.setattr(cli.tempfile, "gettempdir", lambda: str(tmp_path / "tmp"))
+    (tmp_path / "tmp").mkdir()
+    assert cli.main(["--simulate", "--lens", "b", "focus", "--yes"]) == 0
+    assert not config.default_config_path().exists()
+    assert (tmp_path / "tmp" / "omni-autofocus-simulate.toml").exists()
