@@ -13,8 +13,8 @@ safety and accuracy improvements.
 1. ComMarker Studio must have been installed once: it installs the USB driver the laser needs
    (the laser shows up as "Cypress FX2LP Sample Device").
 2. Download `omni-autofocus.exe` from the Releases page.
-3. Put your work piece under the head, then **close ComMarker Studio and make sure LightBurn is not
-   talking to the laser** (see [Using it with LightBurn](#using-it-with-lightburn)).
+3. Put your work piece under the head and **close ComMarker Studio**. LightBurn can stay open (see
+   [Using it with LightBurn](#using-it-with-lightburn)).
 4. Double-click `omni-autofocus.exe`. It measures, shows the planned move, asks for confirmation,
    moves Z and re-checks.
 
@@ -79,8 +79,8 @@ For a deliberate defocus or a global nudge on top of the lens values, use
 
 ## Settings
 
-The example values in the settings file match the tested Omni Xe 6W (focus heights above, Z on axis 1 at 800 pulses/mm). If your machine differs, copy the
-values from your ComMarker Studio install:
+The settings file is created on first run from the calibration stored in your laser (see
+[Calibration](#calibration)). To view or change it:
 
 ```bash
 omni-autofocus config show
@@ -101,9 +101,16 @@ Settings live in `%APPDATA%\omni-autofocus\config.toml`. You can override the lo
 
 ## Using it with LightBurn
 
-Only one program should talk to the laser at a time. Run the autofocus while LightBurn is not
-connected to the laser, then let LightBurn reconnect for the job. LightBurn does not need any Z
-settings for this. Focus is set physically before the job.
+LightBurn can stay open and connected. Autofocus between jobs, then start the job in LightBurn.
+LightBurn does not need any Z settings for this: focus is set physically before the job.
+
+* The tool refuses to move Z while the controller is busy (a LightBurn job, or the framing/red-light
+  preview). Stop the preview first.
+* Don't start a LightBurn job while the tool is moving Z.
+* ComMarker Studio must be closed. It polls the laser constantly and the tool refuses to run beside it.
+
+Exit codes for scripts: 0 in focus, 1 error or cancelled, 2 refused (out of range, safety limit),
+3 moved but still more than 0.5 mm from focus.
 
 ## Troubleshooting
 

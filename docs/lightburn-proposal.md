@@ -11,8 +11,9 @@ implementation is available: <!-- TODO: repository URL -->.
 ## What autofocus does on this machine
 
 1. Read the height sensor: a Modbus RTU device on the controller's RS-485 port.
-2. `move = target − reading`, where the target is a per-lens sensor reading stored in ComMarker
-   Studio's config (222 mm for the 150 mm lens, 181 mm for the 70 mm lens on the tested machine).
+2. `move = target − reading`, where the target is a per-lens sensor reading that the factory stores
+   in the controller's flash (222 mm for the 150 mm lens, 181 mm for the 70 mm lens on the tested
+   machine).
 3. Move the Z axis (auxiliary axis 1) by `move × 800 pulses/mm`, then optionally re-measure.
 
 ## Controller commands involved

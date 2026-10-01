@@ -45,7 +45,7 @@ def _check_other_software(force: bool) -> None:
             )
     for exe, name in WARN_PROGRAMS.items():
         if exe in running:
-            print(f"Note: {name} is running. Make sure it is not connected to the laser while this runs.")
+            print(f"Note: {name} is running. That is fine, but do not start a job until this finishes.")
 
 
 def _confirm(prompt: str, assume_yes: bool) -> bool:
@@ -231,9 +231,17 @@ def _autofocus(ctl: Controller, s: config.Settings, *, passes: int, dry_run: boo
             print("Cancelled.")
             return 1
         ctl.move_axis(s.z_axis.axis_params(), p.pulses)
-    final = autofocus.plan(ctl.read_height_median(s.focus.samples), s)
-    print(f"final: sensor {final.height_mm:.3f} mm, error {final.target_mm - final.height_mm:+.3f} mm")
+    height = ctl.read_height_median(s.focus.samples)
+    error = s.focus.target_mm - height
+    print(f"final: sensor {height:.3f} mm, error {error:+.3f} mm")
+    if abs(error) > FOCUS_TOLERANCE_MM:
+        print(f"Warning: still {error:+.2f} mm from focus. Check the Z axis and run focus again.")
+        return 3
     return 0
+
+
+# Sensor readings wobble about +-0.2 mm, so a final error up to this counts as focused.
+FOCUS_TOLERANCE_MM = 0.5
 
 
 def _parse_offsets(text: str) -> list[float]:
@@ -369,7 +377,8 @@ def _dial_in(args, s: config.Settings, burned: list[float], reference: float) ->
         )
     centre = (lo + hi) / 2
     lens_key = s.focus.lens.lower()
-    new_target = round(reference + centre - s.focus.offset_mm, 1)
+    # The sensor reading at best focus. focus.offset_mm stays a separate nudge on top of it.
+    new_target = round(reference + centre, 1)
     old_target = s.focus.target_b_mm if lens_key == "b" else s.focus.target_a_mm
     print(f"Good range {lo:+g} .. {hi:+g} mm -> centre {centre:+g} mm from the autofocus height.")
     if abs(new_target - old_target) < 0.1:
@@ -606,7 +615,7 @@ def _run(argv: list[str] | None) -> int:
     logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s")
     try:
         return args.func(args)
-    except (ControllerError, OSError, ValueError) as e:
+    except (ControllerError, autofocus.FocusError, OSError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

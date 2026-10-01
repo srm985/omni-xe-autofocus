@@ -5,7 +5,8 @@
 First public release. Verified on a ComMarker Omni Xe 6W (BSL controller, USB `04B4:1004`).
 
 - `focus`: measure with the built-in height sensor and move Z to ComMarker Studio's focus height,
-  with confirmation, dry run, a move safety limit and a second correction pass
+  with confirmation, dry run, a move safety limit and a second correction pass; exits 3 with a
+  warning if it ends more than 0.5 mm from focus
 - automatic lens selection from the active LightBurn BSL profile's field size (fallback: ComMarker
   Studio's lens setting), always printed; `--lens` overrides
 - median of several sensor readings per measurement (the sensor wobbles about ±0.2 mm)

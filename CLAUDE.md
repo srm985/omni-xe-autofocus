@@ -11,7 +11,7 @@ LightBurn. The controller protocol is documented in `docs/protocol.md`.
 
 ## Rules
 
-- Hardware status lives in `docs/hardware-testing.md` (steps 1-9 pass as of 2026-10-01).
+- Hardware status lives in `docs/hardware-testing.md` (all but steps 10-11 pass as of 2026-10-01).
   Never send motion commands to the real laser without the user's explicit go-ahead in chat.
 - Golden byte vectors in `tests/` are the reference encodings. If hardware disagrees, update
   `docs/protocol.md` and the vectors together, citing the observed frames.

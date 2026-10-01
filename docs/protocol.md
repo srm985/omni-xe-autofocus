@@ -1,8 +1,9 @@
 # BSL controller protocol (as used for Omni Xe autofocus)
 
 Notes on the BSL controller protocol as the Omni Xe uses it (matching ComMarker Studio v1.0.17).
-Status: **implemented and unit-tested against reference
-vectors; not yet verified on hardware** — see [hardware-testing.md](hardware-testing.md).
+Status: **verified on hardware** (Omni Xe 6W, 2026-10-01) for everything this tool uses: framing,
+state queries, the sensor pass-through, Z moves and the flash reads. Sections note what was
+confirmed; the log is in [hardware-testing.md](hardware-testing.md).
 
 ## 1. How ComMarker Studio autofocuses
 

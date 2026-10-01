@@ -251,6 +251,31 @@ def test_cli_focus_ladder_dials_in_and_saves(monkeypatch, capsys, tmp_path):
     assert saved.focus.lens == "auto"  # the --lens override is not persisted
 
 
+def test_cli_focus_ladder_keeps_offset_separate(monkeypatch, capsys, tmp_path):
+    from omni_autofocus import cli
+
+    cfg = tmp_path / "offset.toml"
+    config.save(config.Settings(focus=config.FocusSettings(offset_mm=0.5)), cfg)
+    prompt, _ = scripted({"Lowest": "-2", "Highest": "+3", "Save": "y"})
+    monkeypatch.setattr(cli, "_prompt", prompt)
+    assert cli.main(["--simulate", "--config", str(cfg), "--lens", "b", "focus-ladder", "--yes"]) == 0
+    # Autofocus lands on 222 + 0.5; best focus is 0.5 mm above that. The offset stays on top.
+    saved = config.load(cfg)
+    assert saved.focus.target_b_mm == 223.0 and saved.focus.offset_mm == 0.5
+
+
+def test_cli_focus_warns_when_not_converged(monkeypatch, capsys):
+    from omni_autofocus import cli
+    from omni_autofocus.controller import Controller
+
+    real_move = Controller.move_axis
+    monkeypatch.setattr(
+        Controller, "move_axis", lambda self, params, pulses, **kw: real_move(self, params, 1)
+    )
+    assert cli.main(["--simulate", "--lens", "b", "focus", "--yes"]) == 3
+    assert "Warning: still" in capsys.readouterr().out
+
+
 def test_cli_focus_ladder_retries_when_controller_busy(monkeypatch, capsys):
     from omni_autofocus import cli
     from omni_autofocus.controller import Controller, ControllerBusyError
