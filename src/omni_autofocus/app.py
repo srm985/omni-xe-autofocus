@@ -565,6 +565,8 @@ class App:
             self._tune_render()
         elif kind == "tune_pending" and self.tune is not None:
             self.tune["pending"] = event[1]
+            if self.tune["stage"] == "burn":
+                self._tune_render()
         elif kind == "tune_step" and self.tune is not None:
             self.tune["index"] = event[1]
             self._tune_render()
@@ -854,6 +856,12 @@ class App:
             self.t_sub.configure(text="Autofocus first, then one mark per height")
             self.t_button.set_text("Start")
             self.t_stop.configure(text="Cancel")
+        elif stage == "burn" and t.get("pending"):
+            # Z is still on its way to the first mark (or waiting for the laser): no burn wording.
+            self.t_big.configure(text=f"{fmt_offset(TUNE_OFFSETS[0])} mm")
+            self.t_sub.configure(text="Z is not at this height yet · do not burn")
+            self.t_button.set_text("Continue")
+            self.t_stop.configure(text="Stop and return Z to focus")
         elif stage == "burn":
             i = t["index"]
             self._set_status(f"Burn mark {i + 1} of {n}", INFO)
@@ -867,7 +875,9 @@ class App:
             self._set_detail("Compare the marks with a loupe or a zoomed photo.")
             self._tune_outcome()
         self.t_hint.configure(
-            text=f"or press {self.hotkey_text} in LightBurn" if self.hotkey_text and stage == "burn" else " "
+            text=f"or press {self.hotkey_text} in LightBurn"
+            if self.hotkey_text and stage == "burn" and not t.get("pending")
+            else " "
         )
         self._draw_dots()
 
@@ -927,15 +937,17 @@ class App:
             if min(lo, hi) == TUNE_OFFSETS[0] or max(lo, hi) == TUNE_OFFSETS[-1]
             else ""
         )
+        lands = ""
+        if f.offset_mm:
+            goes = new + f.offset_mm
+            lands = f" With focus.offset_mm ({f.offset_mm:+g} mm) on top, autofocus goes to {goes:.1f} mm."
         if not ok:
             text = f"{new:.1f} mm is outside the sensor range; check the marks again."
         elif round(new - old, 1) == 0:
-            text = f"Best focus is where autofocus already goes ({old:.1f} mm).{edge}"
+            text = f"Best focus matches the saved height ({old:.1f} mm).{lands}{edge}"
         else:
             heights = f"lens {f.lens.upper()} focus height {old:.1f} → {new:.1f} mm"
-            text = f"Best focus {centre:+.1f} mm → {heights}.{edge}"
-        if f.offset_mm:
-            text += f" focus.offset_mm ({f.offset_mm:+g} mm) stays on top."
+            text = f"Best focus {centre:+.1f} mm → {heights}.{lands}{edge}"
         self.t_outcome.configure(text=text)
         change = ok and round(new - old, 1) != 0
         self.t_save.set_text(f"Save {new:.1f} mm" if change else "Nothing to save")
@@ -991,6 +1003,7 @@ class App:
             dev.__exit__(None, None, None)
             self._post("tune_end")
             raise
+        self._post("tune_pending", True)  # not at the first mark yet: no burn instructions
         self._post("tune_started", dev, run, s)
         self._tune_approach(run)
 
@@ -1049,14 +1062,8 @@ class App:
         if isinstance(e, autofocus.MotionError):
             self._post("motion", False)
         self._post("tune_end")
-        where = (
-            f" Z is about {fmt_offset(run.current)} mm from the focus height; check the Z axis, then press "
-            "Autofocus."
-            if run.current
-            else ""
-        )
         self._post("status", "Stopped", ERR)
-        self._post("detail", describe_error(e) + where)
+        self._post("detail", f"{describe_error(e)} {run.where()}. Check the Z axis, then press Autofocus.")
         self._post("beep", False)
 
     def _confirmer(self, s: config.Settings):

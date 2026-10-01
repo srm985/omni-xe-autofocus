@@ -664,3 +664,23 @@ def test_cli_ladder_does_not_move_again_after_a_motion_fault(monkeypatch, capsys
     assert cli.main(["--simulate", "--lens", "b", "focus-ladder", "--yes", "--offsets", "0,1,2"]) == 2
     out = capsys.readouterr()
     assert moves["returns"] == 0 and "not moving it again" in out.out
+
+
+def test_cli_ladder_exits_2_when_the_return_to_focus_fails(monkeypatch, capsys):
+    from omni_autofocus import cli, ladder
+    from omni_autofocus.autofocus import MotionError
+
+    def fail(self):
+        raise MotionError("Z did not complete a -1.0 mm move")
+
+    monkeypatch.setattr(ladder.Ladder, "return_to_focus", fail)
+    monkeypatch.setattr(
+        cli,
+        "_prompt",
+        lambda text: (
+            "y" if "Save" in text else ("+1" if "Highest" in text else ("0" if "Lowest" in text else ""))
+        ),
+    )
+    assert cli.main(["--simulate", "--lens", "b", "focus-ladder", "--yes", "--offsets", "0,1"]) == 2
+    out = capsys.readouterr().out
+    assert "Could not return Z to focus" in out and "Saved" not in out

@@ -77,6 +77,23 @@ class Ladder:
         self.current = 0.0  # mm from the autofocus height
         self.reference: float | None = None  # sensor reading at the autofocus height
         self.height: float | None = None  # last sensor reading
+        self.height_valid = True  # False once a move may have happened without a reading after it
+
+    def measured_offset(self) -> float | None:
+        """Where the sensor last saw Z, in mm from the autofocus height; None if unknown (a move may have
+        happened without a reading after it). Use this, not ``current``, after a fault."""
+        if not self.height_valid or self.height is None or self.reference is None:
+            return None
+        return self.height - self.reference
+
+    def where(self) -> str:
+        """A sentence for the user about where Z is, from the last reading."""
+        offset = self.measured_offset()
+        if offset is None:
+            return "Where Z is now is unknown"
+        if abs(offset) < 0.3:
+            return "Z is at the focus height"
+        return f"Z is about {offset:+.1f} mm from the focus height (measured)".replace("-", "\u2212")
 
     def measure_reference(self) -> float:
         self.reference = self.height = self.ctl.read_height_median(max(self.settings.focus.samples, 3))
@@ -107,11 +124,13 @@ class Ladder:
         except ControllerBusyError:
             raise  # nothing moved
         except (ControllerError, OSError) as e:
+            self.height_valid = False
             raise autofocus.MotionError(f"Z did not complete a {mm:+.1f} mm move ({e}). Stopped") from e
         self.current = round(self.current + mm, 6)
         try:
             self.height = self.ctl.read_height_median(self.settings.focus.samples)
         except ControllerError as e:
+            self.height_valid = False
             raise autofocus.MotionError(
                 f"after moving Z {mm:+.1f} mm the sensor could not measure ({e})"
             ) from e

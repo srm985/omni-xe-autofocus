@@ -263,7 +263,10 @@ def cmd_focus_ladder(args) -> int:
         faulted = False
         try:
             for offset in offsets:
-                _when_free(lambda o=offset: run.go_to(o))
+                try:
+                    _when_free(lambda o=offset: run.go_to(o))
+                except _LeftInPlace:
+                    break
                 answer = _prompt(
                     f"\nZ is at {offset:+g} mm. Burn the mark labelled '{offset:+g}', "
                     "then press Enter (q + Enter to stop): "
@@ -273,7 +276,7 @@ def cmd_focus_ladder(args) -> int:
                 burned.append(offset)
         except autofocus.MotionError:
             faulted = True  # do not move Z again after a fault
-            print(f"Z is about {run.current:+g} mm from the autofocus height; not moving it again.")
+            print(f"{run.where()}; not moving it again.")
             raise
         finally:
             if run.current and not faulted:
@@ -283,7 +286,10 @@ def cmd_focus_ladder(args) -> int:
                 except _LeftInPlace:
                     print(f"Z left at {run.current:+g} mm from focus; run 'omni-autofocus focus' to return.")
                 except autofocus.MotionError as e:
-                    print(f"Could not return Z ({e}); it is about {run.current:+g} mm from focus.")
+                    faulted = True
+                    print(f"Could not return Z to focus ({e}). {run.where()}.")
+    if faulted:
+        return 2
     if len(burned) < 2:
         return 0
     return _dial_in(args, s, burned, reference)

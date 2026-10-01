@@ -372,7 +372,7 @@ def test_fine_tune_fault_reports_where_z_is_and_moves_nothing_more(window, monke
     settle(window)
     monkeypatch.setattr(Controller, "read_height_median", real_read)
     assert window.tune is None and window.status.cget("text") == "Stopped"
-    assert "Z is about −3 mm from the focus height" in window.detail.cget("text")
+    assert "Where Z is now is unknown" in window.detail.cget("text")  # the sensor failed: no guessing
     assert len(board.lists) == lists_before + 1  # the one step, no automatic return
     window.motion_fault = False
     window._verified_axis = None
@@ -402,6 +402,8 @@ def test_fine_tune_busy_during_the_approach_keeps_the_run(window, monkeypatch):
     settle(window)
     reference = window.tune["run"].reference
     assert window.tune.get("pending") and window.status.cget("text") == "Laser busy"
+    assert "do not burn" in window.t_sub.cget("text") and window.t_hint.cget("text").strip() == ""
+    assert window.t_button.text == "Continue"
     assert board.sensor_mm == pytest.approx(reference - 5.0, abs=0.01)  # below the first mark, run kept
     window._tune_primary()  # Next retries the approach
     settle(window)
