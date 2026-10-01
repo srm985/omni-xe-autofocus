@@ -228,9 +228,12 @@ def dumps(settings: Settings) -> str:
 def save(settings: Settings, path: Path) -> None:
     """Write the settings file atomically: a failed write never leaves it empty or cut short."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(dumps(settings), encoding="utf-8")
-    os.replace(tmp, path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(dumps(settings), encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)  # only left over when the write or replace failed
 
 
 _MODIFIERS = {"alt": 0x1, "ctrl": 0x2, "control": 0x2, "shift": 0x4, "win": 0x8}

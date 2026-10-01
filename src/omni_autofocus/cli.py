@@ -452,7 +452,13 @@ def cmd_config(args) -> int:
         if len(args.values) != 2:
             print("Usage: omni-autofocus config set SECTION.KEY VALUE (e.g. focus.offset_mm 0.3)")
             return 2
-        stored = config.load(path) if path.exists() else config.Settings()
+        if not path.exists():  # never start a file from the example focus heights by accident
+            print(
+                f"There is no settings file yet ({path}). Create it from the laser first: "
+                "'omni-autofocus config init --from-laser' (or press Autofocus in the app)."
+            )
+            return 1
+        stored = config.load(path)
         updated = config.set_value(stored, args.values[0], args.values[1])
         config.save(updated, path)
         print(f"Set {args.values[0]} = {args.values[1]} in {path}")

@@ -635,3 +635,76 @@ def test_settings_file_writes_are_atomic_and_empty_files_are_refused(tmp_path):
     path.write_text("", encoding="utf-8")
     with pytest.raises(ValueError, match="no focus heights"):
         config.load(path)
+
+
+def _laser_cfg(a: float, b: float, pitch: int = 6400) -> dict:
+    return {
+        "lmcPars": {"params": [{"parName": "default", "fBestFocalDistance": a, "fBestFocalDistance_B": b}]},
+        "extMarkerPar": {
+            "axisZParExt": {
+                "setting": {"axisId": 1, "bRevRot": True, "pitchPulse": pitch, "screwPitch": 4.0,
+                            "maxRunSpeed": 320.0, "gearRatio": 1.0},
+                "runData": {"startSpeed": 0.0, "runSpeed": 8.0, "accSpeed": 5.0},
+            }
+        },
+    }  # fmt: skip
+
+
+def test_first_save_accepts_a_placeholder_lens_from_the_laser(settings_window, monkeypatch):
+    from omni_autofocus import session as session_mod
+
+    w = settings_window
+    monkeypatch.setattr(session_mod, "read_laser_calibration", lambda ctl: _laser_cfg(0.0, 221.0))
+    w._session.path.unlink()
+    w.open_settings_view()
+    for letter in "AB":
+        w._settings_factory(letter)
+        settle(w)
+    w._settings_save()
+    settle(w)
+    saved = config.load(w._session.path)
+    assert saved.focus.target_a_mm == 0.0 and saved.focus.target_b_mm == 221.0
+
+
+def test_first_save_with_typed_heights_still_uses_the_lasers_z_axis(settings_window, monkeypatch):
+    from omni_autofocus import session as session_mod
+
+    w = settings_window
+    monkeypatch.setattr(session_mod, "read_laser_calibration", lambda ctl: _laser_cfg(180.0, 221.0))
+    w._session.path.unlink()
+    w.open_settings_view()
+    w._set_entry(w.s_heights["A"], "180.5")
+    w._set_entry(w.s_heights["B"], "222.5")
+    w._settings_save()  # no Factory pressed: the save reads the laser itself
+    settle(w)
+    saved = config.load(w._session.path)
+    assert saved.z_axis.pitch_pulse == 6400
+    assert (saved.focus.target_a_mm, saved.focus.target_b_mm) == (180.5, 222.5)
+
+
+def test_old_one_modifier_hotkey_is_reported_as_invalid(settings_window):
+    w = settings_window
+    s = config.load(w._session.path)
+    from dataclasses import replace as dc_replace
+
+    config.save(dc_replace(s, app=dc_replace(s.app, hotkey="ctrl+f")), w._session.path)
+    w.open_settings_view()
+    w._set_entry(w.s_offset, "   ")  # spaces only: means 0
+    w._set_entry(w.s_confirm, "12")
+    w.simulate = False  # the invalid key is rejected before anything is registered
+    try:
+        w._settings_save()
+    finally:
+        w.simulate = True
+    settle(w)
+    assert w.status.cget("text") == "Hotkey not valid" and "two" in w.detail.cget("text")
+    assert config.load(w._session.path).app.confirm_down_above_mm == 12.0
+
+
+def test_status_after_cancelled_reading_stays_on_the_main_view(settings_window):
+    w = settings_window
+    w.open_settings_view()
+    w._settings_here("B")
+    w._close_settings()
+    settle(w)
+    assert w.status.cget("text") == "Ready"  # neither "Measuring…" nor "Settings" leaks through

@@ -412,6 +412,9 @@ def test_set_focus_asks_before_saving(tmp_path, monkeypatch):
 
 def test_config_set_values_and_validation(tmp_path):
     cfg = tmp_path / "c.toml"
+    assert run("--config", str(cfg), "config", "set", "focus.offset_mm", "0.3") == 1  # no file yet
+    assert not cfg.exists()
+    assert run("--config", str(cfg), "config", "init", "--from-laser") == 0
     assert run("--config", str(cfg), "config", "set", "focus.offset_mm", "0.3") == 0
     assert run("--config", str(cfg), "config", "set", "z_axis.invert_direction", "true") == 0
     assert run("--config", str(cfg), "config", "set", "focus.lens", "a") == 0
@@ -685,3 +688,17 @@ def test_cli_ladder_exits_2_when_the_return_to_focus_fails(monkeypatch, capsys):
     assert cli.main(["--simulate", "--lens", "b", "focus-ladder", "--yes", "--offsets", "0,1"]) == 2
     out = capsys.readouterr().out
     assert "Could not return Z to focus" in out and "Saved" not in out
+
+
+def test_settings_save_leaves_no_temp_file_on_failure(tmp_path, monkeypatch):
+    import os
+
+    path = tmp_path / "s.toml"
+
+    def fail(src, dst):
+        raise PermissionError("locked by antivirus")
+
+    monkeypatch.setattr(os, "replace", fail)
+    with pytest.raises(PermissionError):
+        config.save(config.Settings(), path)
+    assert list(tmp_path.iterdir()) == []

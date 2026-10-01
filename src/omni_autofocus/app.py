@@ -568,7 +568,14 @@ class App:
         elif kind == "settings_value":
             if self.settings_open:  # ignored after Cancel
                 self._set_entry(self.s_heights[event[1]], event[2])
+                self._set_status("Settings", INFO)
                 self._set_detail(event[3])
+        elif kind == "settings_note":
+            if self.settings_open:  # progress of a Settings reading; nothing to show after Cancel
+                self._set_status(event[1], BUSY)
+        elif kind == "settings_first_base":
+            if self.settings_open:
+                self._settings_apply(event[1], event[2], None, first=True)
         elif kind == "settings_factory":
             if self.settings_open:
                 self._s_factory = event[1]
@@ -1303,77 +1310,113 @@ class App:
         if self.busy:
             self._set_detail("Wait for the reading to finish, then Save.")
             return
+        texts = {
+            "focus.target_a_mm": self.s_heights["A"].get().strip(),
+            "focus.target_b_mm": self.s_heights["B"].get().strip(),
+            "focus.offset_mm": self.s_offset.get().strip() or "0",
+            "app.confirm_down_above_mm": self.s_confirm.get().strip(),
+            "app.hotkey": self.s_hotkey.get().strip().lower(),
+            "app.sounds": "true" if self.s_sounds.get() else "false",
+            "z_axis.invert_direction": "true" if self.s_invert.get() else "false",
+        }
         path = self._session.path
-        fields = [  # (settings key, what the user sees, current text)
-            (
-                "focus.target_a_mm",
-                "Focus height " + self.s_names["A"].cget("text"),
-                self.s_heights["A"].get(),
-            ),
-            (
-                "focus.target_b_mm",
-                "Focus height " + self.s_names["B"].cget("text"),
-                self.s_heights["B"].get(),
-            ),
-            ("focus.offset_mm", "Focus nudge", self.s_offset.get() or "0"),
-            ("app.confirm_down_above_mm", "Ask before moving down", self.s_confirm.get()),
-            ("app.hotkey", "Hotkey", self.s_hotkey.get().strip().lower()),
-            ("app.sounds", "Sound", "true" if self.s_sounds.get() else "false"),
-            ("z_axis.invert_direction", "Z direction", "true" if self.s_invert.get() else "false"),
-        ]
         try:
             stored = config.load(path) if path.exists() else None
-            if stored is None:
-                # First settings file: build on the laser's own calibration (Z axis, sensor range, lens
-                # sizes) when it has been read; typed heights then replace its focus heights.
-                if not all(self.s_heights[x].get().strip() for x in "AB"):
-                    raise ValueError("enter both focus heights (or press Factory) before saving")
-            s = stored or self._s_factory or config.Settings()
-            changed: set[str] = set()
-            for key, what, text in fields:
-                text = text.strip()
-                if stored is not None and text.lower() == self._s_original.get(key, "").strip().lower():
+        except (OSError, ValueError) as e:
+            self._settings_failed(e)
+            return
+        if stored is not None:
+            self._settings_apply(stored, texts, self._s_original, first=False)
+        elif not (texts["focus.target_a_mm"] and texts["focus.target_b_mm"]):
+            self._settings_failed(ValueError("enter both focus heights (or press Factory) before saving"))
+        elif self._s_factory is not None:
+            self._settings_apply(self._s_factory, texts, None, first=True)
+        else:  # first settings file: build it on the laser's own calibration (Z axis, sensor range, sizes)
+            self._start(self._read_first_base, texts, settings=True)
+
+    def _settings_failed(self, e: Exception) -> None:
+        msg = str(e)
+        self._set_status("Not saved", ERR)
+        self._set_detail(msg[0].upper() + msg[1:] + ".")
+
+    def _settings_apply(
+        self, base: config.Settings, texts: dict, originals: dict | None, *, first: bool
+    ) -> None:
+        """Apply the edited fields on top of ``base`` and save. Only fields that differ from what was
+        shown (or, for a first file, from the laser's values) are written, so stored values stay exact."""
+        if originals is None:
+            f = base.focus
+            originals = {
+                "focus.target_a_mm": self._fmt_height(f.target_a_mm),
+                "focus.target_b_mm": self._fmt_height(f.target_b_mm),
+                "focus.offset_mm": f"{f.offset_mm:g}",
+                "app.confirm_down_above_mm": f"{base.app.confirm_down_above_mm:g}",
+                "app.hotkey": base.app.hotkey,
+                "app.sounds": str(base.app.sounds).lower(),
+                "z_axis.invert_direction": str(base.z_axis.invert_direction).lower(),
+            }
+        names = {
+            "focus.target_a_mm": "Focus height " + lens_name("A", base.focus),
+            "focus.target_b_mm": "Focus height " + lens_name("B", base.focus),
+            "focus.offset_mm": "Focus nudge",
+            "app.confirm_down_above_mm": "Ask before moving down",
+            "app.hotkey": "Hotkey",
+            "app.sounds": "Sound",
+            "z_axis.invert_direction": "Z direction",
+        }
+        s, changed = base, set()
+        try:
+            for key, text in texts.items():
+                if text.lower() == originals.get(key, "").strip().lower():
                     continue  # unchanged: keep the stored value exactly
                 if key.startswith("focus.target") and not text:
-                    raise ValueError(f"{what}: enter a value, or press Factory")
+                    raise ValueError(f"{names[key]}: enter a value, or press Factory")
                 try:
                     s = config.set_value(s, key, text)
                 except ValueError as e:
                     msg = str(e)
                     if "could not convert" in msg or "invalid literal" in msg:
                         msg = f"{text!r} is not a number"
-                    raise ValueError(f"{what}: {msg}") from None
+                    raise ValueError(f"{names[key]}: {msg}") from None
                 changed.add(key)
             f = s.focus
             for letter, key in (("A", "target_a_mm"), ("B", "target_b_mm")):
+                # Check a height that was edited, or a real one when the nudge changed. A placeholder for
+                # an unfitted lens (e.g. 0 from the laser) is left alone.
                 value = getattr(f, key)
-                # Check a lens's height when it was edited, or when it is a real height (an unfitted
-                # lens may keep a placeholder such as 0). The nudge is added when focusing.
                 in_use = f.sensor_min_mm <= value <= f.sensor_max_mm
                 if f"focus.{key}" in changed or (in_use and "focus.offset_mm" in changed):
-                    aimed = value + f.offset_mm
-                    if not f.sensor_min_mm <= aimed <= f.sensor_max_mm:
+                    if not f.sensor_min_mm <= value + f.offset_mm <= f.sensor_max_mm:
                         nudge = f" with the {f.offset_mm:+g} mm nudge" if f.offset_mm else ""
                         raise ValueError(
                             f"the {lens_name(letter, f)} focus height{nudge} must stay between "
                             f"{f.sensor_min_mm:g} and {f.sensor_max_mm:g} mm (a sensor reading, not a "
                             "distance to the work)"
                         )
-            if changed or stored is None:
-                config.save(s, path)
+            if changed or first:
+                config.save(s, self._session.path)
         except (OSError, ValueError) as e:
-            msg = str(e)
-            self._set_status("Not saved", ERR)
-            self._set_detail(msg[0].upper() + msg[1:] + ".")
+            self._settings_failed(e)
             return
         self._close_settings()
-        self._set_status("Settings saved" if changed else "No changes", OK if changed else INFO)
-        self._set_detail("They apply from the next Autofocus." if changed else "Nothing needed saving.")
-        if ("app.hotkey" in changed or (self.hotkey is None and s.app.hotkey)) and not self.simulate:
-            if not self._rebind_hotkey(s.app):
-                keys = " + ".join(k.strip().title() for k in s.app.hotkey.split("+"))
-                self._set_status("Hotkey not available", WARN)
-                self._set_detail(f"{keys} is used by another program. Choose another in ⋯ → Settings.")
+        self._set_status(
+            "Settings saved" if changed or first else "No changes", OK if changed or first else INFO
+        )
+        self._set_detail(
+            "They apply from the next Autofocus." if changed or first else "Nothing needed saving."
+        )
+        hotkey = s.app.hotkey
+        if hotkey and not self.simulate and ("app.hotkey" in changed or self.hotkey is None):
+            keys = " + ".join(k.strip().title() for k in hotkey.split("+"))
+            try:
+                config.parse_hotkey(hotkey)  # e.g. a one-modifier key left in an older file
+            except ValueError as e:
+                self._set_status("Hotkey not valid", WARN)
+                self._set_detail(f"{e}. Choose another in ⋯ → Settings.")
+            else:
+                if not self._rebind_hotkey(s.app):
+                    self._set_status("Hotkey not available", WARN)
+                    self._set_detail(f"{keys} is used by another program. Choose another in ⋯ → Settings.")
         self._start(self._prepare_quietly)
 
     def _rebind_hotkey(self, app_settings: config.AppSettings) -> bool:
@@ -1398,7 +1441,7 @@ class App:
 
     def _read_here(self, letter: str) -> None:
         self._session.check_other_software()
-        self._post("status", "Measuring…", BUSY)
+        self._post("settings_note", "Measuring…")
         path = self._session.path
         current = config.load(path) if path.exists() else config.Settings()
         dev, ctl = self._session.open()
@@ -1415,11 +1458,10 @@ class App:
             f"Measured {h:.1f} mm. Use it only with the {name} lens fitted and Z at its best focus; then "
             f"Save.{nudge}",
         )  # fmt: skip
-        self._post("status", "Settings", INFO)
 
     def _read_factory(self, letter: str) -> None:
         self._session.check_other_software()
-        self._post("status", "Reading the laser…", BUSY)
+        self._post("settings_note", "Reading the laser…")
         dev, ctl = self._session.open()
         with dev:
             factory = config.from_commarker(session.read_laser_calibration(ctl))
@@ -1429,7 +1471,19 @@ class App:
             "settings_value", letter, self._fmt_height(value),
             f"Factory value from the laser: {value:.1f} mm. Press Save to use it.",
         )  # fmt: skip
-        self._post("status", "Settings", INFO)
+
+    def _read_first_base(self, texts: dict) -> None:
+        """First settings file: get the laser's calibration (or ComMarker Studio's) to build on."""
+        self._post("settings_note", "Reading the laser…")
+        try:
+            base, _source = self._session.factory_calibration()
+        except ControllerError as e:
+            if "no focus calibration found" not in str(e):
+                raise ControllerError(
+                    f"{e}. Connect and switch on the laser so its Z axis settings can be read, then Save"
+                ) from e
+            base = config.Settings()  # laser reachable but nothing stored anywhere: typed heights only
+        self._post("settings_first_base", base, texts)
 
     def check_driver(self) -> None:
         from . import driver
