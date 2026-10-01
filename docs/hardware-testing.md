@@ -61,3 +61,4 @@ Results log (fill in):
 | 2026-10-01 | 19 | pass | lens picker A / B / Auto updated the lens line; ⋯ → Check height showed the height without moving; reopened app kept its position and lens choice |
 | 2026-10-01 | 17 | pass | Ctrl+Alt+F with LightBurn focused: a downward move over 10 mm asked first (as designed); after Yes moved down 11.8 mm to 222.1 mm, "In focus" |
 | 2026-10-01 | 18 | pass | LightBurn framing preview running: Autofocus refused with "Stopped · The laser is busy …", Z did not move, no motion fault latched; after stopping the preview: moved up 2.4 mm to 222.0 mm, "In focus" |
+| 2026-10-01 | 20 | pass | in-app fine-tuning on hardware: Start autofocused and went to −4 mm, nine marks burned with Next / the hotkey, Z returned to focus, result view worked; owner: "looks good". Found and fixed on the way: the result used the noisy post-autofocus reading (0..0 showed 221.9), now based on the aimed 222.0 |
