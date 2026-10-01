@@ -10,8 +10,9 @@ safety and accuracy improvements.
 
 ## Quick start (no Python needed)
 
-1. ComMarker Studio must have been installed once: it installs the USB driver the laser needs
-   (the laser shows up as "Cypress FX2LP Sample Device").
+1. The laser needs Cypress's CyUSB3 USB driver (it shows up as "Cypress FX2LP Sample Device").
+   LightBurn needs the same driver for this laser, so if LightBurn already talks to it, you have it.
+   ComMarker Studio's installer is one way to get it. ComMarker Studio itself is not needed.
 2. Download `omni-autofocus.exe` from the Releases page.
 3. Put your work piece under the head and **close ComMarker Studio**. LightBurn can stay open (see
    [Using it with LightBurn](#using-it-with-lightburn)).
@@ -119,8 +120,9 @@ Exit codes for scripts: 0 in focus, 1 error or cancelled, 2 refused (out of rang
   Z buttons and try again.
 * **"counter moved … expected …"**: the controller did not execute the full move (stall, limit).
   Check the Z axis mechanically before trying again.
-* **No device found**: check the USB cable and power, and that ComMarker Studio has installed its
-  driver (`omni-autofocus devices` lists what the driver sees).
+* **No device found**: check the USB cable and power, and that the laser uses the CyUSB3 driver
+  (Device Manager shows "Cypress FX2LP Sample Device"). `omni-autofocus devices` lists what the
+  driver sees.
 
 ## How it works
 
