@@ -54,10 +54,11 @@ Good to know:
 
 ## Lenses
 
-The Omni takes two field lenses, each with its own focus height. The window shows which lens it uses
-and why.
+The Omni takes two field lenses, each with its own focus height. The window shows them by size, with
+ComMarker's letters for familiarity: **70 mm (A)** and **150 mm (B)** on the tested machine (the
+sizes come from your laser's calibration). The line under the picker says which lens is used and why.
 
-* **When you swap lenses, choose A or B in the window.** The choice is remembered. A wrong choice is
+* **When you swap lenses, choose its size in the window.** The choice is remembered. A wrong choice is
   caught by the question before any large move down.
 * **Auto** uses the field size of your LightBurn BSL device profile (70×70 mm → A, 150×150 mm → B),
   but only when LightBurn says which one: when there is a single BSL profile, or when the BSL

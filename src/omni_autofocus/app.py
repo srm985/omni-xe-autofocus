@@ -30,7 +30,19 @@ APP_NAME = "Omni Autofocus"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE = "OmniAutofocus"
 MUTEX_NAME = "Local\\OmniAutofocusApp"
-LENS_CHOICES = {"Auto": None, "A": "a", "B": "b"}
+LENS_CHOICES = {"Auto": None, "A": "a", "B": "b"}  # picker values (saved in the app state)
+
+
+def lens_name(letter: str, focus: config.FocusSettings) -> str:
+    """'150 mm (B)': the lens's field size from the calibration, with ComMarker's letter."""
+    letter = letter.upper()
+    size = focus.field_b_mm if letter == "B" else focus.field_a_mm
+    return f"{size:g} mm ({letter})"
+
+
+def lens_labels(focus: config.FocusSettings) -> dict[str, str]:
+    return {"Auto": "Auto", "A": lens_name("A", focus), "B": lens_name("B", focus)}
+
 
 # Status tones; ui.Palette has a colour for each.
 OK, WARN, ERR, INFO, BUSY = "ok", "warn", "err", "info", "busy"
@@ -46,7 +58,7 @@ class Cancelled(Exception):
 def describe_error(e: BaseException) -> str:
     """A short, actionable sentence for anything an operation can raise."""
     if isinstance(e, lens.LensError):
-        return "Cannot tell which lens is fitted. Choose Lens A or Lens B in this window."
+        return "Cannot tell which lens is fitted. Choose the lens size in this window."
     if isinstance(e, ControllerBusyError):
         return "The laser is busy. Stop the LightBurn job or close the framing preview, then try again."
     if isinstance(e, SensorNoTargetError):
@@ -92,10 +104,13 @@ def describe_result(r: autofocus.FocusResult) -> tuple[str, str, str]:
     return "Already in focus", f"Height {r.height_mm:.1f} mm · focus {r.target_mm:.1f} mm", OK
 
 
-def lens_summary(choice: str, why: str, target_mm: float | None) -> str:
-    """One quiet line, e.g. "Auto → B · LightBurn 'BSLFiber' · 222.0 mm"."""
+def lens_summary(
+    choice: str, why: str, target_mm: float | None, focus: config.FocusSettings | None = None
+) -> str:
+    """One quiet line, e.g. "Auto → 150 mm (B) · LightBurn 'BSLFiber' · 222.0 mm"."""
     letter = why.split(" (")[0].split()[-1].upper()
-    head = f"Auto → {letter}" if choice == "Auto" else f"Lens {letter}"
+    name = lens_name(letter, focus or config.FocusSettings())
+    head = f"Auto → {name}" if choice == "Auto" else f"{name} lens"
     if "from ComMarker" in why:  # checked first: this explanation also mentions LightBurn
         source = "ComMarker Studio setting"
     elif "LightBurn" in why:
@@ -358,6 +373,7 @@ class App:
             value=self.lens_choice,
             command=self._lens_changed,
             palette=p,
+            labels=lens_labels(self._startup_focus()),
             scale=sc,
         )
         self.lens_picker.pack(side="right")
@@ -437,6 +453,13 @@ class App:
             vx, vy, vw, vh = _virtual_screen()
             if vx <= x <= vx + vw - 100 and vy <= y <= vy + vh - 60:
                 self.root.geometry(f"+{x}+{y}")
+
+    def _startup_focus(self) -> config.FocusSettings:
+        """Lens sizes for the picker before the worker has loaded anything (never touches the laser)."""
+        try:
+            return self._session.settings(calibrate=False)[0].focus
+        except (OSError, ValueError):
+            return config.FocusSettings()
 
     def _show_menu(self) -> None:
         m = self.more
@@ -535,6 +558,8 @@ class App:
             self._set_detail(event[1])
         elif kind == "lens":
             self.lens_info.configure(text=event[1])
+        elif kind == "lens_labels":
+            self.lens_picker.relabel(event[1])
         elif kind == "app":
             self._apply_app_settings(event[1])
         elif kind == "ask":
@@ -655,8 +680,8 @@ class App:
                     if from_laser
                     else "Use these focus heights?\n\n"
                 )
-                + f"Lens A ({f.field_a_mm:g} mm field): {f.target_a_mm:.1f} mm\n"
-                + f"Lens B ({f.field_b_mm:g} mm field): {f.target_b_mm:.1f} mm\n\n"
+                + f"{lens_name('A', f)} lens: {f.target_a_mm:.1f} mm\n"
+                + f"{lens_name('B', f)} lens: {f.target_b_mm:.1f} mm\n\n"
                 + (
                     "ComMarker measured these at the factory. "
                     if source == "the laser"
@@ -667,7 +692,10 @@ class App:
 
         s, why, _note = self._session.settings_with_lens(calibrate=calibrate, accept=accept)
         self._post("app", s.app)
-        self._post("lens", lens_summary(self.lens_choice, why, s.focus.target_mm if calibrated else None))
+        self._post(
+            "lens", lens_summary(self.lens_choice, why, s.focus.target_mm if calibrated else None, s.focus)
+        )
+        self._post("lens_labels", lens_labels(s.focus))
         return s
 
     def _prepare(self) -> None:
@@ -946,7 +974,7 @@ class App:
         elif round(new - old, 1) == 0:
             text = f"Best focus matches the saved height ({old:.1f} mm).{lands}{edge}"
         else:
-            heights = f"lens {f.lens.upper()} focus height {old:.1f} → {new:.1f} mm"
+            heights = f"{lens_name(f.lens, f)} lens focus height {old:.1f} → {new:.1f} mm"
             text = f"Best focus {centre:+.1f} mm → {heights}.{lands}{edge}"
         self.t_outcome.configure(text=text)
         change = ok and round(new - old, 1) != 0

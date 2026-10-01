@@ -256,6 +256,7 @@ class Segmented(tk.Frame):
         palette: Palette,
         scale: float = 1.0,
         pad: int = 14,
+        labels: dict[str, str] | None = None,
     ):
         super().__init__(parent, bg=palette.border, padx=1, pady=1)
         self.p, self.command = palette, command
@@ -265,7 +266,7 @@ class Segmented(tk.Frame):
         for i, option in enumerate(options):
             lbl = tk.Label(
                 self,
-                text=option,
+                text=(labels or {}).get(option, option),
                 padx=int(pad * scale),
                 pady=int(3 * scale),
                 cursor="hand2",
@@ -279,6 +280,12 @@ class Segmented(tk.Frame):
             focus_ring(lbl, palette.text, lambda o=option: self._bg(o))
             self._labels[option] = lbl
         self._paint()
+
+    def relabel(self, labels: dict[str, str]) -> None:
+        """Change what the options show; their values stay the same."""
+        for option, text in labels.items():
+            if option in self._labels:
+                self._labels[option].configure(text=text)
 
     def set_enabled(self, enabled: bool) -> None:
         self.enabled = enabled

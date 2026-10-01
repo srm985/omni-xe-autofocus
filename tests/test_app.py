@@ -109,7 +109,7 @@ def settle(w, timeout=10.0):
 
 
 def test_window_autofocus_in_simulation(window):
-    assert window.lens_info.cget("text").startswith("Auto → B")
+    assert window.lens_info.cget("text").startswith("Auto → 150 mm (B)")
     window.autofocus()
     settle(window)
     assert window.status.cget("text") == "In focus"
@@ -195,7 +195,7 @@ def test_first_run_shows_the_calibration_and_can_cancel(window, monkeypatch, tmp
     monkeypatch.setattr(window, "_ask_yes_no", lambda q, **kw: asked.append(q) or False)
     window.autofocus()
     settle(window)
-    assert "focus heights stored in your laser" in asked[0] and "Lens B (150 mm field): 222.0 mm" in asked[0]
+    assert "focus heights stored in your laser" in asked[0] and "150 mm (B) lens: 222.0 mm" in asked[0]
     assert window.status.cget("text") == "Not saved"
     assert not fresh.exists()  # declined: nothing saved
     board = window._session.open()[0].__enter__()
@@ -204,10 +204,12 @@ def test_first_run_shows_the_calibration_and_can_cancel(window, monkeypatch, tmp
 
 def test_lens_summary():
     why = "lens B (150 mm field, from the only BSL profile in LightBurn, 'BSLFiber')"
-    assert app.lens_summary("Auto", why, 222.0) == "Auto → B · LightBurn 'BSLFiber' · 222.0 mm"
-    assert app.lens_summary("A", "lens A (set explicitly)", None) == "Lens A · focus read on first use"
+    assert app.lens_summary("Auto", why, 222.0) == "Auto → 150 mm (B) · LightBurn 'BSLFiber' · 222.0 mm"
+    assert (
+        app.lens_summary("A", "lens A (set explicitly)", None) == "70 mm (A) lens · focus read on first use"
+    )
     assert app.lens_summary("Auto", "lens A (from ComMarker Studio's lens setting; x)", 181.0) == (
-        "Auto → A · ComMarker Studio setting · 181.0 mm"
+        "Auto → 70 mm (A) · ComMarker Studio setting · 181.0 mm"
     )
 
 
@@ -308,7 +310,7 @@ def test_fine_tune_full_run_saves_the_best_focus(window):
     assert board.sensor_mm == pytest.approx(reference, abs=0.01)  # back at focus
     window.t_low.select("−2", notify=True)
     window.t_high.select("+3", notify=True)
-    assert "222.0 → 222.5 mm" in window.t_outcome.cget("text")
+    assert "150 mm (B) lens focus height 222.0 → 222.5 mm" in window.t_outcome.cget("text")
     window._tune_save()
     settle(window)
     assert window.tune is None and window.status.cget("text") == "Focus saved"
@@ -434,4 +436,11 @@ def test_lens_summary_for_the_commarker_fallback_does_not_claim_lightburn():
         "lens B (from ComMarker Studio's lens setting; several BSL profiles in LightBurn, which does not "
         "record the one in use)"
     )
-    assert app.lens_summary("Auto", why, 222.0) == "Auto → B · ComMarker Studio setting · 222.0 mm"
+    assert app.lens_summary("Auto", why, 222.0) == "Auto → 150 mm (B) · ComMarker Studio setting · 222.0 mm"
+
+
+def test_picker_shows_lens_sizes_with_the_letters(window):
+    texts = [lbl.cget("text") for lbl in window.lens_picker._labels.values()]
+    assert texts == ["Auto", "70 mm (A)", "150 mm (B)"]
+    focus = config.FocusSettings(field_a_mm=110.0, field_b_mm=200.0)
+    assert app.lens_labels(focus) == {"Auto": "Auto", "A": "110 mm (A)", "B": "200 mm (B)"}
