@@ -1015,7 +1015,7 @@ class App:
         except ControllerBusyError:
             self._post("tune_pending", True)
             self._post("status", "Laser busy", WARN)
-            self._post("detail", "LightBurn is using the laser. When it is free, press Next to continue.")
+            self._post("detail", "LightBurn is using the laser. When it is free, press Continue.")
             return
         except Exception as e:  # noqa: BLE001 - reported with where Z is
             self._tune_failed(e, run)
