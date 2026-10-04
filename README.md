@@ -18,7 +18,8 @@ https://github.com/user-attachments/assets/ea3971f7-8c9f-45ab-8335-5f9e9e3c0a30
    (latest version; older ones are on the [Releases page](https://github.com/srm985/omni-xe-autofocus/releases))
    and run it. No administrator rights are needed. Windows may say it "protected your PC" because the installer is
    not code-signed: click **More info → Run anyway**.
-2. Leave **Start Omni Autofocus when Windows starts** ticked.
+2. **Start Omni Autofocus when Windows starts** is ticked for convenience. It is not required: untick it
+   if you'd rather open the app yourself, and change it any time in the ⋯ menu.
 3. The Omni Autofocus window opens. Drag it next to LightBurn; it stays on top and remembers where you
    put it.
 
@@ -64,8 +65,9 @@ The Omni takes two field lenses, each with its own focus height. The window show
 ComMarker's letters for familiarity: **70 mm (A)** and **150 mm (B)** on the tested machine (the
 sizes come from your laser's calibration). The line under the picker says which lens is used and why.
 
-* **When you swap lenses, choose its size in the window.** The choice is remembered. A wrong choice is
-  caught by the question before any large move down.
+* **When you swap lenses, choose its size in the window.** The choice is remembered. With the wrong
+  size chosen, Autofocus goes to the other lens's focus height and burns come out unfocused, so check
+  the line under the picker after a swap.
 * **Auto** uses the field size of your LightBurn BSL device profile (70×70 mm → A, 150×150 mm → B),
   but only when LightBurn says which one: when there is a single BSL profile, or when the BSL
   profile is LightBurn's *default* device. LightBurn does not record which profile is in use, so
