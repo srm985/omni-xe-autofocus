@@ -473,19 +473,31 @@ def test_settings_ranges_are_enforced(tmp_path):
     for bad in (
         heights + "max_move_mm = nan\n",
         heights + "max_move_mm = 0.0\n",
+        heights + "max_move_mm = 200.0\n",
         heights + "samples = 0\n",
         "[focus]\ntarget_a_mm = 181.0\ntarget_b_mm = -1.0\n",
         heights + "[z_axis]\npitch_pulse = -3200\n",
-        heights + "[app]\nconfirm_down_above_mm = inf\n",
     ):
         path.write_text(bad)
-        with pytest.raises(ValueError, match="out of range"):
+        with pytest.raises(config.SettingsFileError, match="out of range"):
             config.load(path)
     with pytest.raises(ValueError, match="out of range"):
         config.set_value(config.Settings(), "focus.max_move_mm", "nan")
 
 
-def test_cli_asks_again_before_a_large_second_downward_move(monkeypatch):
+def test_retired_settings_are_accepted_and_dropped_on_save(tmp_path):
+    path = tmp_path / "s.toml"
+    heights = "[focus]\ntarget_a_mm = 181.0\ntarget_b_mm = 222.0\n"
+    path.write_text(heights + "[app]\nconfirm_down_above_mm = 10.0\n")
+    s = config.load(path)  # a file from 1.0.0 still loads
+    config.save(s, path)
+    assert "confirm_down_above_mm" not in path.read_text()
+    path.write_text("[focus]\ntarget_a_mm = 181.0\ntarget_b_mm = 222.0\n[app]\nconfirm_down = 1.0\n")
+    with pytest.raises(config.SettingsFileError, match="unknown setting"):
+        config.load(path)  # anything else unknown is still a mistake
+
+
+def test_cli_asks_once_per_autofocus(monkeypatch):
     from omni_autofocus import cli
     from omni_autofocus.controller import Controller
     from omni_autofocus.simulator import FakeClock, SimulatedBoard
@@ -503,8 +515,8 @@ def test_cli_asks_again_before_a_large_second_downward_move(monkeypatch):
     monkeypatch.setattr(cli, "_confirm", lambda prompt, yes: asked.append(prompt) or True)
     s = replace(config.Settings(), focus=replace(config.Settings().focus, lens="b"))
     cli._autofocus(ctl, s, passes=2, dry_run=False, yes=False)
-    # first move up (+40 mm), then the overshoot needs a large move down: asked both times
-    assert len(asked) == 2 and "+40.0 mm" in asked[0] and asked[1].startswith("Move the Z axis -")
+    # first move up (+40 mm), then the overshoot needs a large move down: that is part of the same run
+    assert len(asked) == 1 and "+40.0 mm" in asked[0]
 
 
 def test_focus_height_outside_the_sensor_range_only_blocks_that_lens(tmp_path):
@@ -702,3 +714,137 @@ def test_settings_save_leaves_no_temp_file_on_failure(tmp_path, monkeypatch):
     with pytest.raises(PermissionError):
         config.save(config.Settings(), path)
     assert list(tmp_path.iterdir()) == []
+
+
+def _sim_with_clock(sensor_mm):
+    from omni_autofocus.controller import Controller
+    from omni_autofocus.simulator import FakeClock, SimulatedBoard
+
+    board = SimulatedBoard(sensor_mm=sensor_mm, sensor_window=(120.0, 280.0))
+    clock = FakeClock()
+    return board, Controller(board, sleep=clock.sleep, clock=clock), clock
+
+
+def _wait(ctl, clock, s=None, **kw):
+    return autofocus.wait_for_surface(ctl, s or _lens_b(), sleep=clock.sleep, clock=clock, **kw)
+
+
+def test_wait_for_surface_returns_at_once_when_the_work_is_in_view():
+    board, ctl, clock = _sim_with_clock(205.0)
+    seen = []
+    assert _wait(ctl, clock, cancelled=lambda: False, on_watch=seen.append) == pytest.approx(205.0)
+    assert seen == []
+
+
+def test_wait_for_surface_follows_the_z_buttons_until_the_head_holds_still():
+    board, ctl, clock = _sim_with_clock(330.0)  # head far too high: the sensor sees nothing
+    seen = []
+
+    def user(w):  # holds Z down, 3 mm per poll, and lets go at 250 mm
+        seen.append(w)
+        if board.sensor_mm > 250.0:
+            board.jog(-3.0)
+
+    h = _wait(ctl, clock, cancelled=lambda: False, on_watch=user)
+    assert h == pytest.approx(249.0)
+    out_of_view = [w for w in seen if w.height_mm is None]
+    assert not out_of_view[0].moving and out_of_view[1].moving  # the counter shows the jog
+    assert all(w.direction == 0 for w in out_of_view)  # out of view the direction is unknown
+    in_view = [w for w in seen if w.height_mm is not None]
+    assert in_view[1].direction == -1  # in view, the sensor shows which way
+    assert in_view[0].steady == 0.0 and in_view[-1].steady >= 0.6  # the bar fills once it holds still
+    assert not board.lists  # waiting never moves Z
+
+
+def test_wait_for_surface_shows_an_upward_jog_as_up_although_the_counter_counts_down():
+    board, ctl, clock = _sim_with_clock(200.0)
+    seen, polls = [], []
+
+    def holding_z_up(seconds):  # Autofocus pressed while still holding Z up: 2 mm per poll, 4 polls
+        polls.append(seconds)
+        if len(polls) <= 4:
+            board.jog(+2.0)
+        clock.sleep(seconds)
+
+    h = autofocus.wait_for_surface(
+        ctl, _lens_b(), cancelled=lambda: False, on_watch=seen.append, sleep=holding_z_up, clock=clock
+    )
+    assert h == pytest.approx(208.0)
+    assert [w.direction for w in seen[:3]] == [1, 1, 1]  # not -1, though the counter fell
+    assert not board.lists
+
+
+def test_wait_for_surface_does_not_go_while_jog_counts_still_arrive():
+    board, ctl, clock = _sim_with_clock(240.0)  # in view, the head creeping too little for the sensor
+    seen, polls = [], []
+
+    def creeping(seconds):
+        polls.append(seconds)
+        if len(polls) <= 4:
+            board.counters[1] -= 40  # 0.05 mm: under the sensor's noise, yet the counter moves
+        clock.sleep(seconds)
+
+    autofocus.wait_for_surface(
+        ctl, _lens_b(), cancelled=lambda: False, on_watch=seen.append, sleep=creeping, clock=clock
+    )
+    assert seen and all(w.moving for w in seen[:3])  # waited for the counter to settle
+    assert seen[-1].steady >= 0.6 and not seen[-1].moving
+
+
+def test_wait_for_surface_ignores_a_single_blip():
+    board, ctl, clock = _sim_with_clock(330.0)
+    n = []
+
+    def user(w):
+        n.append(w)
+        if len(n) == 1:
+            board.jog(-80.0)  # into view at 250
+        elif len(n) == 3:
+            board.sensor_window = (120.0, 200.0)  # one "no target" while the head holds still
+        elif len(n) == 4:
+            board.sensor_window = (120.0, 280.0)
+
+    assert _wait(ctl, clock, cancelled=lambda: False, on_watch=user) == pytest.approx(250.0)
+    assert all(w.height_mm is not None for w in n[1:])  # the blip never showed as "not in view"
+
+
+def test_wait_for_surface_uses_the_configured_window_and_can_be_cancelled_or_time_out():
+    board, ctl, clock = _sim_with_clock(275.0)  # in the sensor's view, outside a narrower setting
+    s = _lens_b()
+    s = replace(s, focus=replace(s.focus, sensor_max_mm=270.0))
+    calls = []
+    assert _wait(ctl, clock, s, cancelled=lambda: len(calls) >= 3, on_watch=calls.append) is None
+    assert [w.height_mm for w in calls] == [None, None, None]
+    with pytest.raises(autofocus.FocusError, match="nothing happened"):
+        _wait(ctl, clock, s, cancelled=lambda: False, timeout_s=5.0)
+
+
+def test_wait_for_surface_timeout_restarts_while_the_head_moves():
+    board, ctl, clock = _sim_with_clock(400.0)
+    polls = []
+
+    def user(w):  # jogs down (still out of view) for longer than the 5 s timeout, then lets go
+        polls.append(clock())
+        if len(polls) <= 30:
+            board.jog(-1.0)
+
+    with pytest.raises(autofocus.FocusError, match="nothing happened"):
+        _wait(ctl, clock, cancelled=lambda: False, on_watch=user, timeout_s=5.0)
+    assert polls[30] - polls[0] > 5.0  # moving kept it waiting past the timeout
+    assert 5.0 <= polls[-1] - polls[30] <= 6.0  # then it timed out 5 s after the last movement
+
+
+def test_wait_for_surface_waits_until_focus_is_within_one_move():
+    board, ctl, clock = _sim_with_clock(275.0)  # lens A focus at 181: 94 mm away, the limit is 60
+    s = replace(config.Settings(), focus=replace(config.Settings().focus, lens="a"))
+    seen = []
+
+    def user(w):
+        seen.append(w)
+        if len(seen) == 3:
+            board.jog(-40.0)  # keeps lowering: 235, within 60 mm of 181
+
+    h = _wait(ctl, clock, s, cancelled=lambda: False, on_watch=user)
+    assert h == pytest.approx(235.0)
+    assert not seen[0].in_reach and seen[0].steady == 0.0 and seen[1].steady == 0.0  # no countdown yet
+    assert seen[-1].in_reach

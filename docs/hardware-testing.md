@@ -1,6 +1,6 @@
 # Hardware bring-up checklist
 
-Status (2026-10-01): steps 1-9 and 11-21 pass on an Omni Xe 6W; step 10 (a LightBurn focus test) is
+Status (2026-10-04): steps 1-9 and 11-22 pass on an Omni Xe 6W; step 10 (a LightBurn focus test) is
 still to do. On a
 new machine, go through the steps in order and stop at the first surprise. Run each command with
 `-vv` the first time so the raw USB frames are printed; save the output if anything looks wrong.
@@ -32,6 +32,7 @@ power switch for motion steps.
 | 19 | Lens picker A / B / Auto, ⋯ → Check height | no | lens line updates; height shown, nothing moves |
 | 21 | ⋯ → Settings: Factory (both lenses), Use current at best focus, change the hotkey and Save, then press the new hotkey | no (Use current only reads) | values filled from the laser / sensor; new hotkey works without a restart |
 | 20 | ⋯ → Fine-tune focus in the app: Start, burn each mark, press Next or Ctrl+Alt+F from LightBurn; try Next while a burn is still running; pick the good range | **yes** | each mark at the shown height; busy laser makes it wait; good range centred on 0 (step 10) |
+| 22 | Raise the head out of the sensor's view (above 280 mm), press Autofocus, then jog down and briefly up with the machine's Z buttons | **yes** (after the head stops) | "Can't see the work", button reads Cancel, "Head moving" while jogging, Z does not move while waiting; in view: distance to focus and the right arrow both ways; the bar fills when the head holds still, then it focuses without asking |
 
 If step 6 moves the wrong way (sensor change ≈ −1 mm): set `invert_direction = true` in `[z_axis]`
 and repeat 6–7. If the distance is off by a constant factor, check `pitch_pulse`/`screw_pitch`.
@@ -66,3 +67,7 @@ Results log (fill in):
 | 2026-10-01 | 11 | pass, design changed | second BSL profile (70×70) selected, then LightBurn closed: prefs.ini rewritten on close but `DefaultDevice` stayed 0 (a JCZ profile). So LightBurn records its default device, not the one in use, and Auto cannot follow a profile switch. With two BSL profiles Auto now falls back to ComMarker Studio's lens setting (B here) and says so; the README tells users to pick A/B in the app when swapping lenses |
 | 2026-10-01 | 5/20 | pass | fine-tuning result accepted by the owner ("looks good") |
 | 2026-10-01 | 21 | pass | in-app Settings on hardware: Factory, Use current, hotkey change applied without restart, invalid input refused; owner: "looks good" |
+| 2026-10-04 | – | pass | sensor window measured by stepping Z through its travel: last valid reading 278.3 mm at the top and 120.5 mm at the bottom (onto a 47 mm block), "no target" one step beyond each; readings follow Z 1:1. Z's limit switches stop the motor and show as an axis counter shortfall ("counter moved -126 pulses, expected ±1600") |
+| 2026-10-04 | 22 | pass | head 65 mm above focus: "Can't see the work"; owner lowered it with the Z buttons, the app picked the block up at 275.1 mm once the head held still, asked before the 53 mm downward move, then probed 3 mm and finished at 221.9 mm |
+| 2026-10-04 | – | pass | Z counter during the machine's own Z buttons (read-only log): it follows a jog live at 800 pulses/mm and stops with the head, but counts **down for both directions** (up 2 s: sensor +9.6 mm, counter −7453; down 2 s: sensor −10.9 mm, counter −8831). So the counter shows only whether the head moves; direction comes from the sensor |
+| 2026-10-04 | 22 | pass | with the live panel and no downward question: picked up the block at 275.2 mm, probe to 272.1, focused at 222.0 mm without asking; direction shown correctly both ways; nothing logged as failed |

@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.1 (2026-10-04)
+
+- when the sensor cannot see the work, Autofocus explains, waits while you move the head with the
+  machine's Z buttons, and continues by itself once the work is in view and the head holds still;
+  the button becomes Cancel (Esc and the hotkey cancel too). Z never moves while waiting.
+- a live panel while you move the head: a gauge of what the sensor sees with the focus mark,
+  whether the head is moving (and which way, once the work is in view), the distance to focus, and
+  a bar that fills while the head holds still; a short sound when autofocus takes over. It waits
+  for the Z counter to settle completely first, so jog counts never mix into the move's own check.
+- no more question before a move down: pressing Autofocus is the go-ahead, as in ComMarker Studio.
+  `app.confirm_down_above_mm` is retired (older settings files still load). After Z failed to
+  follow a move, the app still asks before each move until one checks out.
+- failures are logged (`-v`) with their reason
+- a bad value in the settings file is reported as a settings-file problem that names the value,
+  instead of a bare range message
+- README: the sensor's 120–280 mm window (measured on hardware at both ends), materials it cannot
+  see, and the sensor's sliding mount
+
 ## 1.0.0 (2026-10-01)
 
 First public release. Verified on a ComMarker Omni Xe 6W (BSL controller, USB `04B4:1004`).

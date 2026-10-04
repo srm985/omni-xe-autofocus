@@ -448,3 +448,63 @@ class Check(tk.Frame):
             self.variable.trace_remove("write", self._trace)
         except tk.TclError:
             pass
+
+
+class JogPanel(tk.Canvas):
+    """Live view while the user moves the head with the machine's Z buttons.
+
+    Left, a vertical gauge of what the sensor sees: its measuring window (solid), the out-of-view
+    ends (dashed), the focus height and, when in view, where the work is: head higher, marker higher.
+    Right, a headline, a line about the head's movement, and a bar that fills while the head holds
+    still, after which autofocus continues by itself."""
+
+    W, H = 300, 104  # design pixels
+    GX, TOP, END, TEXT_X = 16, 6, 16, 52  # gauge centre, margin, out-of-view stub length, text column
+
+    def __init__(self, parent, *, palette: Palette, scale: float, width: int = 300):
+        self.p, self.sc = palette, scale
+        self.w, self.h = int(width * scale), int(self.H * scale)
+        super().__init__(parent, width=self.w, height=self.h, bg=palette.bg, highlightthickness=0, bd=0)
+        self.window = (120.0, 280.0)
+        self.target = 222.0
+
+    def set_window(self, lo: float, hi: float, target: float) -> None:
+        self.window, self.target = (lo, hi), target
+
+    def _y(self, mm: float) -> float:
+        sc, (lo, hi) = self.sc, self.window
+        top, bottom = (self.TOP + self.END) * sc, self.h - (self.TOP + self.END) * sc
+        mm = min(max(mm, lo), hi)
+        return bottom - (mm - lo) / (hi - lo) * (bottom - top)
+
+    def show(self, *, height: float | None, headline: str, motion: str, footer: str, steady: float,
+             tone: str = "text") -> None:  # fmt: skip
+        p, sc = self.p, self.sc
+        self.delete("all")
+        gx, top, bottom = self.GX * sc, self.TOP * sc, self.h - self.TOP * sc
+        band_top, band_bottom = self._y(self.window[1]), self._y(self.window[0])
+        for a, b in ((top, band_top), (band_bottom, bottom)):  # out of view: too high / too close
+            self.create_line(gx, a, gx, b, fill=p.border, width=max(1, round(2 * sc)), dash=(2, 3))
+        band = p.muted if height is not None else p.border
+        self.create_line(gx, band_top, gx, band_bottom, fill=band, width=round(8 * sc), capstyle="round")
+        yt = self._y(self.target)
+        self.create_line(gx - 10 * sc, yt, gx + 10 * sc, yt, fill=p.ok, width=max(2, round(3 * sc)))
+        if height is not None:
+            r, ym = 7 * sc, self._y(height)
+            self.create_oval(gx - r, ym - r, gx + r, ym + r, fill=p.accent, outline=p.bg, width=round(2 * sc))
+        x, wrap = self.TEXT_X * sc, self.w - self.TEXT_X * sc - 2 * sc
+        colour = {"ok": p.ok, "warn": p.warn}.get(tone, p.text)
+        self.create_text(
+            x, 4 * sc, text=headline, anchor="nw", fill=colour, font=(FONT, 11, "bold"), width=wrap
+        )
+        self.create_text(x, 32 * sc, text=motion, anchor="nw", fill=p.muted, font=(FONT, 9), width=wrap)
+        bar_y, bar_h = 62 * sc, 6 * sc
+        if height is not None:
+            self.create_line(x + bar_h / 2, bar_y, self.w - bar_h, bar_y, fill=p.border, width=bar_h,
+                             capstyle="round")  # fmt: skip
+            if steady > 0:
+                end = x + bar_h / 2 + (self.w - bar_h - x - bar_h / 2) * min(1.0, steady)
+                self.create_line(
+                    x + bar_h / 2, bar_y, end, bar_y, fill=p.accent, width=bar_h, capstyle="round"
+                )
+        self.create_text(x, 74 * sc, text=footer, anchor="nw", fill=p.muted, font=(FONT, 8), width=wrap)

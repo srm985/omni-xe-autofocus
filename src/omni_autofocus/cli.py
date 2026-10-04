@@ -207,8 +207,8 @@ def _autofocus(ctl: Controller, s: config.Settings, *, passes: int, dry_run: boo
     asked: list[bool] = []
 
     def confirm(p: autofocus.FocusPlan) -> bool:
-        # Ask before the first move, and before any later large move towards the work.
-        if asked and not autofocus.is_large_downward(p, s.app.confirm_down_above_mm):
+        # Ask once, before the first move; the follow-up correction is part of the same autofocus.
+        if asked:
             return True
         asked.append(True)
         return _confirm(f"Move the Z axis {p.move_mm:+.1f} mm now?", yes)

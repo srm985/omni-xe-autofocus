@@ -120,7 +120,9 @@ class Session:
             from .simulator import FakeClock, SimulatedBoard, factory_flash_image
 
             if self._board is None:
-                self._board = SimulatedBoard(sensor_mm=205.0, flash_image=factory_flash_image())
+                self._board = SimulatedBoard(
+                    sensor_mm=205.0, flash_image=factory_flash_image(), sensor_window=(120.0, 280.0)
+                )
             clock = FakeClock()
             return contextlib.nullcontext(self._board), Controller(
                 self._board, sleep=clock.sleep, clock=clock

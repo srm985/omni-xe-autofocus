@@ -66,6 +66,8 @@ def describe_error(e: BaseException) -> str:
             "No surface in the sensor's range. Bring the head near working height with the machine's Z "
             "buttons."
         )
+    if isinstance(e, config.SettingsFileError):
+        return f"The settings file has a problem ({e}). Open ⋯ → Settings to fix it."
     if isinstance(e, session.ConflictError):
         msg = str(e)
         return msg[0].upper() + msg[1:]
@@ -75,12 +77,34 @@ def describe_error(e: BaseException) -> str:
     return str(e) or type(e).__name__
 
 
-def needs_confirmation(
-    p: autofocus.FocusPlan, app: config.AppSettings, *, motion_fault: bool = False
-) -> bool:
-    """One-click focus asks only before a downward move larger than the configured threshold, or
-    before every move after Z last failed to follow a move."""
-    return motion_fault or autofocus.is_large_downward(p, app.confirm_down_above_mm)
+def jog_lines(
+    w: autofocus.SurfaceWatch, target_mm: float, max_move_mm: float | None = None
+) -> tuple[str, str, str, str]:
+    """(headline, movement line, footer, tone) for the live panel while the user moves the head."""
+    # Direction only from the sensor: the Omni's Z counter counts jogs down whichever way they go.
+    motion = {1: "▲ Head moving up", -1: "▼ Head moving down"}.get(w.direction, "Head moving")
+    if w.height_mm is None:
+        motion = motion if w.moving else "Head not moving · use the machine's Z buttons"
+        return "Not in view yet", motion, "Autofocus continues once the sensor sees the work.", "warn"
+    d = w.height_mm - target_mm
+    at_focus = abs(d) < 0.5
+    headline = "At focus height" if at_focus else f"{abs(d):.1f} mm {'above' if d > 0 else 'below'} focus"
+    if not w.in_reach:
+        limit = f" at most {max_move_mm:g} mm" if max_move_mm else " only so far"
+        way = "lowering" if d > 0 else "raising"
+        return (
+            headline,
+            motion if w.moving else "Head not moving",
+            f"Keep {way} the head: autofocus moves{limit} at once.",
+            "warn",
+        )
+    motion = motion if w.moving else "Holding still…"
+    return (
+        headline,
+        motion,
+        "Hands off: autofocus takes over when the bar fills.",
+        "ok" if at_focus else "text",
+    )
 
 
 def updown(mm: float) -> str:
@@ -255,6 +279,16 @@ def _beep(ok: bool) -> None:
         pass
 
 
+def _beep_notice() -> None:
+    """A different sound from the finish sound: autofocus has taken over from the Z buttons."""
+    try:
+        import winsound
+
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
+    except (ImportError, RuntimeError):
+        pass
+
+
 def _state_path(simulate: bool = False) -> Path:
     base = os.environ.get("LOCALAPPDATA") or str(Path.home())
     name = (
@@ -297,6 +331,8 @@ class App:
         self.events: queue.Queue = queue.Queue()
         self.busy = False
         self.moving = False  # an operation that can move Z is running
+        self.waiting = False  # Autofocus is waiting for the work to come into the sensor's view
+        self._cancel_wait = threading.Event()
         self.hotkey: Hotkey | None = None
         self._hotkey_tried = False
         self.hotkey_text = ""  # e.g. "Ctrl + Alt + F" once registered
@@ -369,6 +405,11 @@ class App:
             guard=self._key_allowed,
         )  # fmt: skip
         self.button.pack(pady=(int(12 * sc), int(6 * sc)))
+        # Live view while waiting for the work to come into the sensor's view; packed only then.
+        self.jog = ui.JogPanel(main, palette=p, scale=sc, width=self.WIDTH)
+        self._jog_in_view: bool | None = None
+        self._jog_watch: autofocus.SurfaceWatch | None = None
+        self._jog_max: float | None = None
         self.hint = tk.Label(main, text=" ", bg=p.bg, fg=p.muted, font=(font, 9), wraplength=wrap)
         self.hint.pack()
 
@@ -419,6 +460,7 @@ class App:
             self.more.bind(seq, lambda e: self._show_menu())
 
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+        self.root.bind("<Escape>", lambda e: self._stop_waiting())
         self._restore_position()
         self.root.attributes("-topmost", self.on_top.get())
         ui.dark_title_bar(self.root, dark)
@@ -439,6 +481,10 @@ class App:
     def close(self) -> None:
         if self.tune is not None and self.tune["stage"] == "burn":
             self._set_detail("Stop fine-tuning first, so Z can return to the focus height.")
+            return
+        if self.waiting:  # nothing has moved yet: stop waiting, then close once the laser is released
+            self._stop_waiting()
+            self.root.after(200, self.close)
             return
         if self.moving:  # quitting would abandon a move half-way; the installer's close request waits
             self._set_status("Still moving", WARN)
@@ -562,7 +608,7 @@ class App:
                 ("detail", "Autofocus needs these focus heights. Press Autofocus to review them again.")
             )
         except Exception as e:  # noqa: BLE001 - every failure becomes a status line
-            log.debug("operation failed", exc_info=True)
+            log.info("operation failed: %s", e, exc_info=True)  # shown with -v
             if isinstance(e, autofocus.MotionError):
                 self.events.put(("motion", False))
             self.events.put(("status", "Stopped", ERR))
@@ -667,9 +713,40 @@ class App:
             self.motion_fault = not ok
             self._verified_axis = axis if ok else None
             _save_state({**_load_state(self.simulate), "motion_fault": self.motion_fault}, self.simulate)
+        elif kind == "waiting":
+            self.waiting = event[1]
+            self.button.set_text("Cancel" if self.waiting else "Autofocus")
+            self.button.set_enabled(self.waiting)
+            if self.waiting:  # started with the hotkey from another program: show what is needed
+                self.jog.set_window(*event[2:5])
+                self._jog_max = event[5]
+                self._jog_in_view = None
+                self.jog.pack(before=self.button, fill="x", pady=(int(12 * self.jog.sc), 0))
+                self.root.deiconify()
+                self.root.lift()
+            else:
+                self.jog.pack_forget()
+        elif kind == "watch":
+            self._show_watch(event[1])
+        elif kind == "continuing":  # the head held still in view: autofocus takes over from here
+            self.waiting = False
+            self.button.set_text("Autofocus")
+            self.button.set_enabled(False)
+            self._set_status("Continuing autofocus", BUSY)
+            self._set_detail("Got it. Hands off the Z buttons while Z moves to focus.")
+            last = self._jog_watch
+            self.jog.show(
+                height=last.height_mm if last else None, headline="Continuing autofocus",
+                motion="Moving Z to the focus height…", footer="", steady=1.0, tone="ok",
+            )  # fmt: skip
+            if self.app_settings.sounds:
+                _beep_notice()
         elif kind == "idle":
             self.busy = False
             self.moving = False
+            self.waiting = False
+            self.button.set_text("Autofocus")
+            self.jog.pack_forget()
             self.button.set_enabled(True)
             self.lens_picker.set_enabled(True)
             self._set_dot(self._tone)
@@ -690,6 +767,30 @@ class App:
             if self._lens_dirty:  # the lens was changed while busy: refresh the lens line now
                 self._lens_dirty = False
                 self._start(self._prepare_quietly)
+
+    def _show_watch(self, w: autofocus.SurfaceWatch) -> None:
+        if not self.waiting:  # a last reading queued behind Cancel
+            return
+        self._jog_watch = w
+        headline, motion, footer, tone = jog_lines(w, self.jog.target, self._jog_max)
+        self.jog.show(
+            height=w.height_mm, headline=headline, motion=motion, footer=footer, steady=w.steady, tone=tone
+        )
+        in_view = w.height_mm is not None
+        if in_view != self._jog_in_view:
+            self._jog_in_view = in_view
+            if in_view:
+                self._set_status("Work in view", BUSY)
+                self._set_detail(
+                    "Stop moving the head when you like: autofocus takes over once it holds still."
+                )
+            else:
+                lo, hi = self.jog.window
+                self._set_status("Can't see the work", WARN)
+                self._set_detail(
+                    f"The sensor only sees {lo:g}–{hi:g} mm. Lower the head with the Z buttons (raise it "
+                    "if a tall piece is close)."
+                )
 
     def _ask(self, question: str, *, default: str = "no") -> bool:
         """Ask from the worker thread; blocks until the user answers in the window."""
@@ -779,7 +880,15 @@ class App:
                 self._post("app", config.AppSettings())
 
     def autofocus(self) -> None:
+        if self.waiting:  # the button reads Cancel, and the hotkey means the same
+            self._stop_waiting()
+            return
         self._start(self._autofocus, moves=True)
+
+    def _stop_waiting(self) -> None:
+        if self.waiting:
+            self._cancel_wait.set()
+            self.button.set_enabled(False)
 
     def _autofocus(self) -> None:
         note = self._session.check_other_software()
@@ -789,6 +898,7 @@ class App:
 
         dev, ctl = self._session.open()
         with dev:
+            self._wait_for_surface(ctl, s)
             result = autofocus.run(
                 ctl,
                 s,
@@ -803,6 +913,33 @@ class App:
         self._post("status", headline, tone)
         self._post("detail", detail)
         self._post("beep", tone == OK)
+
+    def _wait_for_surface(self, ctl, s: config.Settings) -> None:
+        """If the sensor cannot see the work, explain and wait while the user moves the head; raise
+        :class:`Cancelled` if they cancel. Returns at once when the work is already in view."""
+        f = s.focus
+        shown = False
+
+        def on_watch(w: autofocus.SurfaceWatch) -> None:
+            nonlocal shown
+            if not shown:
+                shown = True
+                self._post("waiting", True, f.sensor_min_mm, f.sensor_max_mm, f.target_mm, f.max_move_mm)
+            self._post("watch", w)
+
+        self._cancel_wait.clear()
+        try:
+            h = autofocus.wait_for_surface(ctl, s, cancelled=self._cancel_wait.is_set, on_watch=on_watch)
+        except BaseException:
+            if shown:
+                self._post("waiting", False)
+            raise
+        if h is None or self._cancel_wait.is_set():
+            if shown:
+                self._post("waiting", False)
+            raise Cancelled
+        if shown:  # the panel stays up, saying autofocus has taken over, until it finishes
+            self._post("continuing")
 
     def check_height(self) -> None:
         self._start(self._check_height)
@@ -1159,16 +1296,18 @@ class App:
         self._post("beep", False)
 
     def _confirmer(self, s: config.Settings):
-        """The app's confirmation rule for a focus run (worker thread)."""
+        """The app's confirmation rule for a focus run (worker thread). Pressing Autofocus is the
+        go-ahead for its moves, except after Z last failed to follow a move: then every move is asked
+        about until one checks out."""
         fault = self.motion_fault
 
         def confirm(p: autofocus.FocusPlan) -> bool:
-            if needs_confirmation(p, s.app, motion_fault=fault):
+            if fault:
                 self._post("status", "Confirm the move", BUSY)
                 towards = ", towards the work" if p.move_mm < 0 else ""
-                warning = "Last time Z did not move as expected.\n\n" if fault else ""
                 if not self._ask(
-                    f"{warning}Move the head {updown(p.move_mm)}{towards}?\n\n"
+                    "Last time Z did not move as expected.\n\n"
+                    f"Move the head {updown(p.move_mm)}{towards}?\n\n"
                     f"Height {p.height_mm:.1f} mm, focus at {p.target_mm:.1f} mm."
                 ):
                     return False
@@ -1249,7 +1388,6 @@ class App:
 
         heading("BEHAVIOR")
         self.s_hotkey = field("Hotkey", 18, hint="empty = off", justify="left")
-        self.s_confirm = field("Ask before moving down more than", 6, unit="mm")
         self.s_offset = field("Focus nudge (offset)", 6, unit="mm")
         self.s_sounds = tk.BooleanVar(value=True)
         check("Sound when autofocus finishes", self.s_sounds)
@@ -1305,7 +1443,6 @@ class App:
             )
         hotkey = "+".join(k.strip().title() for k in s.app.hotkey.split("+") if k.strip())
         self._s_set("app.hotkey", self.s_hotkey, hotkey)
-        self._s_set("app.confirm_down_above_mm", self.s_confirm, f"{s.app.confirm_down_above_mm:g}")
         self._s_set("focus.offset_mm", self.s_offset, f"{s.focus.offset_mm:g}")
         self.s_sounds.set(s.app.sounds)
         self.s_invert.set(s.z_axis.invert_direction)
@@ -1352,7 +1489,6 @@ class App:
             "focus.target_a_mm": self.s_heights["A"].get().strip(),
             "focus.target_b_mm": self.s_heights["B"].get().strip(),
             "focus.offset_mm": self.s_offset.get().strip() or "0",
-            "app.confirm_down_above_mm": self.s_confirm.get().strip(),
             "app.hotkey": self.s_hotkey.get().strip().lower(),
             "app.sounds": "true" if self.s_sounds.get() else "false",
             "z_axis.invert_direction": "true" if self.s_invert.get() else "false",
@@ -1397,7 +1533,6 @@ class App:
                 "focus.target_a_mm": self._fmt_height(f.target_a_mm),
                 "focus.target_b_mm": self._fmt_height(f.target_b_mm),
                 "focus.offset_mm": f"{f.offset_mm:g}",
-                "app.confirm_down_above_mm": f"{base.app.confirm_down_above_mm:g}",
                 "app.hotkey": base.app.hotkey,
                 "app.sounds": str(base.app.sounds).lower(),
                 "z_axis.invert_direction": str(base.z_axis.invert_direction).lower(),
@@ -1406,7 +1541,6 @@ class App:
             "focus.target_a_mm": "Focus height " + lens_name("A", base.focus),
             "focus.target_b_mm": "Focus height " + lens_name("B", base.focus),
             "focus.offset_mm": "Focus nudge",
-            "app.confirm_down_above_mm": "Ask before moving down",
             "app.hotkey": "Hotkey",
             "app.sounds": "Sound",
             "z_axis.invert_direction": "Z direction",

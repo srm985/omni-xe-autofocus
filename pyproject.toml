@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omni-autofocus"
-version = "1.0.0"
+version = "1.0.1"
 description = "Standalone autofocus helper for the ComMarker Omni Xe (BSL controller) so it can be used alongside LightBurn"
 readme = "README.md"
 requires-python = ">=3.11"

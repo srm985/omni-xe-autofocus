@@ -42,17 +42,21 @@ Good to know:
 
 * **LightBurn can stay open and connected.** Close its framing/red-light preview first: while the
   preview or a job runs, the laser is busy and Omni Autofocus will not move Z.
-* **Moving up never asks; a large move down asks first.** Up takes the head away from the work. A
-  move down of more than 10 mm (towards the work) shows the numbers and waits for **Yes** ("No" is
-  the default).
+* **Pressing Autofocus is the go-ahead.** It moves straight to focus, up or down, without asking
+  (like ComMarker Studio). Single moves are limited to `focus.max_move_mm` (60 mm by default).
 * **Every move is checked.** The sensor must see the head move the way it was told. Until that has
   been seen once, a longer move starts with a short 3 mm step. If Z ever does not follow, autofocus
   stops, says why, and asks before every move until a move checks out again.
 * **The first time** you press Autofocus, the focus heights stored in the laser (ComMarker measures
   them at the factory) are shown; press **Yes** to use and save them. There is nothing to type in.
   If the laser holds no usable values, those from an installed ComMarker Studio are offered instead.
-* If there is "no surface" in the sensor's range, the head is far from working height: bring it roughly there with
-  the machine's Z buttons and press Autofocus again.
+* **If the sensor cannot see the work**, the window says so and waits. The sensor only measures
+  120–280 mm and gives the same answer for "too high" and "too close", so the app never guesses a
+  direction: move the head with the machine's Z buttons (usually down). A live panel shows whether
+  the head is moving and, once the work is in view, how far it is from focus and which way it is
+  going. Let go of the buttons: a bar fills while the head holds still, then autofocus takes over
+  with a short sound and finishes by itself. **Cancel**, Esc or the hotkey stops waiting; Z never
+  moves while it waits.
 
 ## Lenses
 
@@ -124,7 +128,7 @@ driver. You can keep Studio installed; just close it while using the laser.
   Type a value (e.g. from the card that came with the machine), press **Use current** to take the
   height Z is at now (only when Z is at best focus for that lens), or **Factory** to read the value
   stored in the laser.
-* **Behavior:** the hotkey (empty turns it off), how large a move down asks first, a focus nudge
+* **Behavior:** the hotkey (empty turns it off), a focus nudge
   (`focus.offset_mm`, added on top of the focus height), and the finish sound.
 * **Machine:** *Z moves the wrong way*, only if autofocus reported that Z moved the opposite way.
 
@@ -143,7 +147,6 @@ stored in your laser:
 | `focus.samples` | sensor readings per measurement (median, default 3, 1…15) |
 | `focus.field_a_mm`, `focus.field_b_mm` | lens field sizes used to recognise LightBurn profiles |
 | `app.hotkey` | the global shortcut: two of ctrl, alt, shift, win, then a letter, digit, F1–F12, space, home or end, e.g. `"ctrl+alt+f"`; `""` turns it off |
-| `app.confirm_down_above_mm` | downward moves larger than this ask first (default 10, 0…60) |
 | `app.sounds` | chime when autofocus finishes (default `true`) |
 | `z_axis.invert_direction` | flip Z direction if your machine moves the wrong way |
 
@@ -183,8 +186,17 @@ Each shows old → new and asks before saving.
 ## Troubleshooting
 
 * **"The laser is busy"**: a LightBurn job or the framing preview is running. Stop it, try again.
-* **"No surface" / "sees no surface"**: the sensor measures 120–280 mm and gives the same answer for too near and too
-  far. Bring the head to roughly working height with the machine's Z buttons.
+* **"Can't see the work" / "No surface"**: the sensor measures 120–280 mm and gives the same answer
+  for too near and too far. Bring the head to roughly working height with the machine's Z buttons.
+  With the 150 mm (B) lens that means no more than about 58 mm above focus.
+* **Clear, glossy or mirror-finish material**: the sensor may see nothing, or the bed or back face
+  through clear acrylic or glass. Put masking tape (or leave the protective film) where the sensor's
+  spot lands.
+* **The sensor's sliding mount**: the focus heights only hold with the sensor where it was when they
+  were measured (the bottom stop from the factory). If it has moved, push it back down to the stop,
+  or fine-tune again for the new position.
+* **"The settings file has a problem"**: a value in the settings file is missing or out of range;
+  the message names it. Open ⋯ → Settings to fix it.
 * **"ComMarker Studio is running"**: close it (check the system tray too).
 * **"counter moved … expected …"**: the controller did not execute the full move (stall, limit).
   Check the Z axis mechanically before trying again.

@@ -76,9 +76,6 @@ class AppSettings:
 
     hotkey: str = "ctrl+alt+f"  # global shortcut for Autofocus; "" turns it off
     sounds: bool = True  # a short system sound when autofocus finishes (handy with the hotkey)
-    # One-click autofocus moves without asking, except a downward move (towards the work) larger
-    # than this. Upward moves only take the head away from the work.
-    confirm_down_above_mm: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -89,10 +86,13 @@ class Settings:
 
 
 SECTIONS = ("focus", "z_axis", "app")
+# Settings older versions wrote that no longer do anything: accepted in a file, dropped on the next save.
+RETIRED = {"app": {"confirm_down_above_mm"}}
 
 
 def _apply(section_cls, data: dict, where: str):
     defaults = section_cls()
+    data = {k: v for k, v in data.items() if k not in RETIRED.get(where, ())}
     known = {f.name for f in fields(section_cls)}
     unknown = set(data) - known
     if unknown:
@@ -139,7 +139,6 @@ def validate(s: Settings) -> Settings:
     _check(z.pitch_pulse > 0 and z.screw_pitch > 0, "z_axis.pitch_pulse and screw_pitch must be > 0")
     _check(z.run_speed > 0 and z.acc_speed > 0 and z.max_run_speed > 0, "z_axis speeds must be > 0")
     _check(z.start_speed >= 0 and z.gear_ratio > 0, "z_axis.start_speed >= 0, gear_ratio > 0")
-    _check(0 <= s.app.confirm_down_above_mm <= 60, "app.confirm_down_above_mm must be between 0 and 60")
     return s
 
 
@@ -151,11 +150,22 @@ def settings_path(path: Path | None = None) -> Path:
     return Path(env) if env else default_config_path()
 
 
+class SettingsFileError(ValueError):
+    """The settings file exists but cannot be used: not TOML, an unknown key, or a value out of range."""
+
+
 def load(path: Path | None = None) -> Settings:
     """Load settings from ``path``, $OMNI_AUTOFOCUS_CONFIG or the default location; fall back to defaults."""
     path = settings_path(path)
     if not path.exists():
         return Settings()  # a not-yet-created settings file means defaults
+    try:
+        return _load_file(path)
+    except ValueError as e:  # includes tomllib.TOMLDecodeError
+        raise SettingsFileError(str(e)) from e
+
+
+def _load_file(path: Path) -> Settings:
     with open(path, "rb") as f:
         data = tomllib.load(f)
     unknown = set(data) - set(SECTIONS)

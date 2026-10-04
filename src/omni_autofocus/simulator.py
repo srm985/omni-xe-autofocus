@@ -26,11 +26,15 @@ class SimulatedBoard:
         moving_polls: int = 3,
         flash_image: bytes = b"",
         flash_start: int = 0x00300000,
+        sensor_window: tuple[float, float] | None = None,
     ):
         self.flash_image = flash_image
         self.flash_start = flash_start
         self._flash_buffer = b""
         self.sensor_mm = sensor_mm
+        # The real sensor answers "no target" outside about 120-280 mm (measured on hardware); None
+        # reports any distance, for tests that need readings outside that window.
+        self.sensor_window = sensor_window
         self.z_axis_id = z_axis_id
         self.z_pulses_per_mm = z_pulses_per_mm
         self.z_reverse = z_reverse
@@ -132,6 +136,8 @@ class SimulatedBoard:
         if request != commands.HEIGHT_REQUEST:
             return b""
         micrometres = round(self.sensor_mm * 1000)
+        if self.sensor_window and not self.sensor_window[0] <= self.sensor_mm <= self.sensor_window[1]:
+            micrometres = commands.SENSOR_NO_TARGET
         return modbus.with_crc(bytes([1, 4, 4]) + struct.pack(">I", micrometres))
 
     def _list(self, data: bytes) -> None:
@@ -149,6 +155,14 @@ class SimulatedBoard:
             if code in (commands.CMD_AXIS_MOVE_01, commands.CMD_AXIS_MOVE_23):
                 self._axis_move(code, data[i + 4 : i + length])
             i += length
+
+    def jog(self, mm: float) -> None:
+        """Move Z like the machine's own Z buttons (+ = up), without any command from the PC. As on
+        the Omni (measured 2026-10-04), the axis counter counts the jog's pulses *down* whichever way
+        the head goes."""
+        self.sensor_mm += mm
+        if self.z_axis_id < 2:
+            self.counters[self.z_axis_id] -= abs(round(mm * self.z_pulses_per_mm))
 
     def _axis_move(self, code: int, body: bytes) -> None:
         flags = body[0]

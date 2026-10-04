@@ -13,12 +13,20 @@ def plan(move_mm: float) -> autofocus.FocusPlan:
     return autofocus.FocusPlan(222.0 - move_mm, 222.0, move_mm, int(move_mm * 800))
 
 
-def test_only_large_downward_moves_need_confirmation():
-    a = config.AppSettings(confirm_down_above_mm=10.0)
-    assert not app.needs_confirmation(plan(+40.0), a)  # up: away from the work
-    assert not app.needs_confirmation(plan(-9.9), a)
-    assert app.needs_confirmation(plan(-10.1), a)
-    assert app.needs_confirmation(plan(+0.5), a, motion_fault=True)  # after a fault: every move
+def test_jog_lines_say_what_the_head_is_doing():
+    w = autofocus.SurfaceWatch
+    head, motion, _, tone = app.jog_lines(w(None, True, 0, 0.0), 222.0)
+    assert head == "Not in view yet" and tone == "warn"
+    assert motion == "Head moving"  # out of view the direction is unknown
+    assert app.jog_lines(w(None, False, 0, 0.0), 222.0)[1].startswith("Head not moving")
+    head, motion, _, tone = app.jog_lines(w(262.4, True, -1, 0.0), 222.0)
+    assert head == "40.4 mm above focus" and motion == "▼ Head moving down" and tone == "text"
+    assert app.jog_lines(w(240.0, True, 1, 0.0), 222.0)[1] == "▲ Head moving up"
+    assert app.jog_lines(w(215.0, False, 0, 0.5), 222.0)[:2] == ("7.0 mm below focus", "Holding still…")
+    assert app.jog_lines(w(222.2, False, 0, 0.5), 222.0)[0] == "At focus height"
+    head, motion, footer, tone = app.jog_lines(w(275.0, False, 0, 0.0, False), 181.0, 60.0)
+    assert head == "94.0 mm above focus" and tone == "warn" and motion == "Head not moving"
+    assert footer == "Keep lowering the head: autofocus moves at most 60 mm at once."
 
 
 def test_describe_error_is_actionable():
@@ -26,6 +34,19 @@ def test_describe_error_is_actionable():
     assert "Z buttons" in app.describe_error(SensorNoTargetError("x"))
     assert app.describe_error(session.ConflictError("ComMarker Studio is running")).startswith("ComMarker")
     assert app.describe_error(autofocus.FocusError("required move too big")) == "Required move too big."
+
+
+def test_a_bad_settings_file_is_named_as_the_cause(tmp_path):
+    path = tmp_path / "s.toml"
+    path.write_text("[focus]\ntarget_a_mm = 181.0\ntarget_b_mm = 222.0\nmax_move_mm = 200.0\n")
+    with pytest.raises(config.SettingsFileError) as e:
+        config.load(path)
+    text = app.describe_error(e.value)
+    assert text.startswith("The settings file has a problem")
+    assert "focus.max_move_mm must be between 0 and 150" in text and "Settings" in text
+    path.write_text("[focus\n")  # not TOML at all
+    with pytest.raises(config.SettingsFileError):
+        config.load(path)
 
 
 def test_describe_result():
@@ -122,15 +143,15 @@ def test_window_autofocus_in_simulation(window):
     assert window.status.cget("text") == "Already in focus"
 
 
-def test_window_asks_before_a_large_downward_move(window, monkeypatch):
+def test_window_moves_down_without_asking(window, monkeypatch):
     board = window._session.open()[0].__enter__()
-    board.sensor_mm = 240.0  # 18 mm too far: the head would move down
+    board.sensor_mm = 260.0  # 38 mm too far: the head moves down; pressing Autofocus was the go-ahead
     asked = []
     monkeypatch.setattr(window, "_ask_yes_no", lambda q, **kw: asked.append(q) or False)
     window.autofocus()
     settle(window)
-    assert asked and "down 18.0 mm, towards the work" in asked[0]
-    assert window.status.cget("text") == "Cancelled"
+    assert not asked
+    assert window.status.cget("text") == "In focus" and board.sensor_mm == pytest.approx(222.0)
 
 
 def test_window_reports_errors(window, monkeypatch):
@@ -624,12 +645,11 @@ def test_settings_view_edits_and_saves(settings_window):
     w.autofocus()  # paused while Settings is open
     assert "Save or cancel Settings first" in w.detail.cget("text")
     w._set_entry(w.s_offset, "0.3")
-    w._set_entry(w.s_confirm, "15")
     w.s_invert.set(True)
     w._settings_save()
     settle(w)
     saved = config.load(w._session.path)
-    assert saved.focus.offset_mm == 0.3 and saved.app.confirm_down_above_mm == 15.0
+    assert saved.focus.offset_mm == 0.3
     assert saved.z_axis.invert_direction and not w.settings_open
     assert w.status.cget("text") == "Settings saved"
 
@@ -641,7 +661,7 @@ def test_settings_view_rejects_bad_values_and_keeps_the_file(settings_window):
         (w.s_offset, "abc", "'abc' is not a number"),
         (w.s_heights["B"], "35", "between 120 and 280 mm"),
         (w.s_hotkey, "ctrl+", "Hotkey"),
-        (w.s_confirm, "500", "out of range"),
+        (w.s_offset, "50", "out of range"),
     ):
         w.open_settings_view()
         w._set_entry(entry, text)
@@ -869,7 +889,7 @@ def test_old_one_modifier_hotkey_is_reported_as_invalid(settings_window):
     config.save(dc_replace(s, app=dc_replace(s.app, hotkey="ctrl+f")), w._session.path)
     w.open_settings_view()
     w._set_entry(w.s_offset, "   ")  # spaces only: means 0
-    w._set_entry(w.s_confirm, "12")
+    w.s_invert.set(not s.z_axis.invert_direction)
     w.simulate = False  # the invalid key is rejected before anything is registered
     try:
         w._settings_save()
@@ -877,7 +897,7 @@ def test_old_one_modifier_hotkey_is_reported_as_invalid(settings_window):
         w.simulate = True
     settle(w)
     assert w.status.cget("text") == "Hotkey not valid" and "two" in w.detail.cget("text")
-    assert config.load(w._session.path).app.confirm_down_above_mm == 12.0
+    assert config.load(w._session.path).z_axis.invert_direction is not s.z_axis.invert_direction
 
 
 def test_status_after_cancelled_reading_stays_on_the_main_view(settings_window):
@@ -922,3 +942,48 @@ def test_settings_reading_errors_show_in_settings_only(settings_window, monkeypa
     w._close_settings()  # Cancel while it runs: the error must not reach the main view
     settle(w)
     assert w.status.cget("text") == "Ready"
+
+
+def wait_until(w, cond, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while not cond():
+        if time.monotonic() > deadline:
+            raise AssertionError("condition not reached")
+        w.root.update()
+        time.sleep(0.01)
+
+
+@pytest.fixture
+def quick_wait(monkeypatch):
+    monkeypatch.setattr(autofocus, "SURFACE_POLL_S", 0.01)
+    monkeypatch.setattr(autofocus, "SURFACE_STEADY_S", 0.05)
+
+
+def test_window_waits_for_the_work_then_focuses(window, quick_wait):
+    board = window._session.open()[0].__enter__()
+    board.sensor_mm = 330.0  # head far too high: the sensor sees nothing
+    moves = len(board.lists)
+    window.autofocus()
+    wait_until(window, lambda: window.waiting)
+    wait_until(window, lambda: window.status.cget("text") == "Can't see the work")
+    assert window.button.text == "Cancel" and window.button.enabled
+    assert "120–280 mm" in window.detail.cget("text") and "Lower the head" in window.detail.cget("text")
+    assert len(board.lists) == moves  # nothing moved while waiting
+    board.sensor_mm = 215.0  # the user lowered the head with the Z buttons
+    settle(window)
+    assert window.status.cget("text") == "In focus"
+    assert window.button.text == "Autofocus" and not window.waiting
+
+
+def test_window_wait_can_be_cancelled_with_the_hotkey(window, quick_wait):
+    board = window._session.open()[0].__enter__()
+    board.sensor_mm = 330.0
+    moves = len(board.lists)
+    window.autofocus()
+    wait_until(window, lambda: window.waiting)
+    window.events.put(("hotkey",))  # pressing the hotkey (or the Cancel button, or Esc) again
+    settle(window)
+    assert window.status.cget("text") == "Cancelled"
+    assert window.detail.cget("text") == "Z did not move."
+    assert window.button.text == "Autofocus" and window.button.enabled
+    assert len(board.lists) == moves
