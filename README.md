@@ -59,6 +59,24 @@ Good to know:
   with a short sound and finishes by itself. **Cancel**, Esc or the hotkey stops waiting; Z never
   moves while it waits.
 
+### Up / down 1 mm
+
+After autofocus, **▼ Down 1 mm** moves the head 1 mm down (focus 1 mm deeper into the work) and
+**▲ Up 1 mm** moves it 1 mm up, at once, from wherever Z is. Use it to defocus on purpose, to go
+deeper between passes, or to compare marks either side of focus. Press again for more.
+
+* The headline shows where the head is against the autofocus height ("2 mm below autofocus height",
+  "Back at autofocus height"), measured by the sensor; the detail line has the numbers.
+* **Nothing is saved:** the next Autofocus goes back to the focus height. For a defocus on *every*
+  autofocus, use the autofocus offset in ⋯ → Settings instead.
+* **Between jobs only**, like Autofocus: while a LightBurn job runs or is paused, the laser is busy
+  and nothing moves. A multi-pass job in LightBurn is one job, so for deep engraving run the passes as
+  separate jobs and press Down between them.
+* **Each press is checked:** the sensor must see the work before and after, and the head stays inside
+  what the sensor can measure (120–280 mm, with a 2 mm margin; a press back towards that range always
+  works). If Z did not follow, it stops with an error like Autofocus. A 1 mm move is too short to prove
+  that Z works again after a fault, so only Autofocus clears one.
+
 ## Lenses
 
 The Omni takes two field lenses, each with its own focus height. The window shows them by size, with
@@ -83,7 +101,7 @@ sizes come from your laser's calibration). The line under the picker says which 
 | Always on top | Keep the window above LightBurn. |
 | Start with Windows | Start Omni Autofocus when you log in. |
 | Check USB driver | Diagnoses the laser's USB connection and helps install the driver. |
-| Settings | Focus heights, hotkey, sounds, confirmation threshold, focus nudge, Z direction (see [Settings](#settings)). |
+| Settings | Focus heights, hotkey, sounds, autofocus offset, Z direction (see [Settings](#settings)). |
 | About | Version, credit and licence. |
 
 ## Fine-tuning focus
@@ -130,8 +148,9 @@ driver. You can keep Studio installed; just close it while using the laser.
   Type a value (e.g. from the card that came with the machine), press **Use current** to take the
   height Z is at now (only when Z is at best focus for that lens), or **Factory** to read the value
   stored in the laser.
-* **Behavior:** the hotkey (empty turns it off), a focus nudge
-  (`focus.offset_mm`, added on top of the focus height), and the finish sound.
+* **Behavior:** the hotkey (empty turns it off), the **autofocus offset (every time)**
+  (`focus.offset_mm`, added on top of the focus height on every autofocus), and the finish sound.
+  Offset = where every Autofocus aims; Up / Down = a one-off move now.
 * **Machine:** *Z moves the wrong way*, only if autofocus reported that Z moved the opposite way.
 
 **Save** checks every value and changes only the settings file on this PC, never the laser. A new
@@ -144,7 +163,7 @@ stored in your laser:
 |---|---|
 | `focus.lens` | `"auto"` (default), `"a"` or `"b"` (the app's lens picker overrides it) |
 | `focus.target_a_mm`, `focus.target_b_mm` | focus height of each lens (sensor reading, inside the sensor range) |
-| `focus.offset_mm` | added to the focus height: a deliberate defocus or a global nudge (−20…20) |
+| `focus.offset_mm` | autofocus offset, added to the focus height on every autofocus: a deliberate defocus (−20…20) |
 | `focus.max_move_mm` | refuse larger single moves (default 60, at most 150) |
 | `focus.samples` | sensor readings per measurement (median, default 3, 1…15) |
 | `focus.field_a_mm`, `focus.field_b_mm` | lens field sizes used to recognise LightBurn profiles |

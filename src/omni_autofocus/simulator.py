@@ -42,6 +42,8 @@ class SimulatedBoard:
         self._moving = 0
         self.counters = [0x40000000, 0x40000000]
         self.running = False
+        # A LightBurn job running or paused: the board is in the run state and reports unfinished work.
+        self.job_running = False
         self._pending: list[bytes] = []
         self._rx = b""
         self._queues: dict[int, deque[bytes]] = {EP_CMD_IN: deque(), EP_DATA_IN: deque()}
@@ -81,8 +83,8 @@ class SimulatedBoard:
         if code == commands.CMD_DEV_STATE:
             reply = bytearray(0x40)
             reply[0:2] = payload[:2]
-            reply[4] = 3 if self.running else 0  # board state (3 = run state, as on hardware)
-            reply[12] = 0 if (moving or self._pending) else 1  # "finished" flag
+            reply[4] = 3 if (self.running or self.job_running) else 0  # board state (3 = run state)
+            reply[12] = 0 if (moving or self._pending or self.job_running) else 1  # "finished" flag
             reply[13:16] = (1024).to_bytes(3, "big")  # free cache, KiB
             return bytes(reply)
         if code == commands.CMD_DEV_EXT_STATE:

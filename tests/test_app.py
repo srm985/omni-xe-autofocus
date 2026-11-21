@@ -8,6 +8,8 @@ import pytest
 from omni_autofocus import app, autofocus, config, session
 from omni_autofocus.controller import ControllerBusyError, SensorNoTargetError
 
+REAL_ASK_YES_NO = app.App._ask_yes_no  # before the window fixture replaces it
+
 
 def plan(move_mm: float) -> autofocus.FocusPlan:
     return autofocus.FocusPlan(222.0 - move_mm, 222.0, move_mm, int(move_mm * 800))
@@ -376,7 +378,11 @@ w.open_fine_tune(); assert w.tune is not None; width()
 w.tune["stage"] = "result"; w._tune_render(); width()
 w._close_tune()
 from omni_autofocus import ui
-print(json.dumps([widths, w.button.winfo_reqwidth(), int(20 * ui.scale_of(w.root))]))
+fits = []
+for b in (w.down_button, w.up_button):
+    x0, y0, x1, y1 = b.bbox(b._label)
+    fits.append([x0, x1, y0, y1, b.w, b.h])
+print(json.dumps([widths, w.button.winfo_reqwidth(), int(20 * ui.scale_of(w.root)), fits]))
 w.root.destroy()
 """
 
@@ -396,9 +402,11 @@ def test_window_width_is_the_same_in_every_view_on_scaled_displays(tmp_path, sca
     if out.returncode == 77:
         pytest.skip("no Tk display")
     assert out.returncode == 0, out.stderr
-    widths, button, margin = json.loads(out.stdout.strip().splitlines()[-1])
+    widths, button, margin, fits = json.loads(out.stdout.strip().splitlines()[-1])
     assert len(set(widths)) == 1, widths
     assert widths[0] == button + 2 * margin  # nothing is wider than the Autofocus button
+    for x0, x1, y0, y1, w, h in fits:  # canvas text clips silently: Up / Down labels fit their buttons
+        assert 4 <= x0 and x1 <= w - 4 and 0 <= y0 and y1 <= h, (x0, x1, y0, y1, w, h)
 
 
 def test_motion_fault_latches_until_z_follows_again(window, monkeypatch):
@@ -743,13 +751,14 @@ def test_menu_greys_out_what_cannot_start_in_the_current_view(settings_window):
     check(free=True)
 
 
-def test_settings_check_height_plus_nudge(settings_window):
+def test_settings_check_height_plus_offset(settings_window):
     w = settings_window
     w.open_settings_view()
     w._set_entry(w.s_heights["B"], "279")
     w._set_entry(w.s_offset, "20")
     w._settings_save()
-    assert w.status.cget("text") == "Not saved" and "with the +20 mm nudge" in w.detail.cget("text")
+    assert w.status.cget("text") == "Not saved"
+    assert "with the +20 mm autofocus offset" in w.detail.cget("text")
 
 
 def test_settings_keep_untouched_values_exactly_and_allow_a_placeholder_lens(settings_window):
@@ -987,3 +996,160 @@ def test_window_wait_can_be_cancelled_with_the_hotkey(window, quick_wait):
     assert window.detail.cget("text") == "Z did not move."
     assert window.button.text == "Autofocus" and window.button.enabled
     assert len(board.lists) == moves
+
+
+# --- up / down 1 mm -------------------------------------------------------------------------------------
+
+
+def ud_result(end_mm: float, kind: str = "ok", step: float = -1.0) -> autofocus.UpDownResult:
+    return autofocus.UpDownResult(kind, step, end_mm - step, end_mm, 222.0)
+
+
+def test_describe_up_down_counts_whole_mm_from_the_autofocus_height():
+    head = lambda end: app.describe_up_down(ud_result(end))[0]  # noqa: E731
+    assert head(222.0 - 0.49) == "Back at autofocus height"
+    assert head(222.0 - 0.5) == "1 mm below autofocus height"  # not round(): halves go up, not to even
+    assert head(222.0 - 1.5) == "2 mm below autofocus height"
+    assert head(222.0 + 2.5) == "3 mm above autofocus height"
+    headline, detail, tone = app.describe_up_down(ud_result(221.1))
+    assert (headline, tone) == ("1 mm below autofocus height", app.WARN)
+    assert detail == "Down 1 mm · moved 1.0 mm · height 221.1 mm. Autofocus returns to focus."
+    assert app.describe_up_down(ud_result(222.1))[2] == app.OK
+    headline, detail, tone = app.describe_up_down(ud_result(222.7, "less", 1.0))
+    assert (headline, tone) == ("Moved less than asked", app.WARN) and detail.startswith(
+        "Up 1 mm asked, but Z moved"
+    )
+    cancelled = autofocus.UpDownResult("cancelled", -1.0, 222.0, 222.0, 222.0)
+    assert app.describe_up_down(cancelled) == ("Cancelled", "Z did not move.", app.INFO)
+
+
+def events_of(window, monkeypatch):
+    seen = []
+    real = window._handle
+    monkeypatch.setattr(window, "_handle", lambda e: seen.append(e[0]) or real(e))
+    return seen
+
+
+def test_up_and_down_in_the_window(window, monkeypatch):
+    board = board_of(window)
+    board.sensor_mm = 222.0  # at lens B's focus
+    seen = events_of(window, monkeypatch)
+    window.down_button._invoke()
+    settle(window)
+    assert window.status.cget("text") == "1 mm below autofocus height" and window._tone == app.WARN
+    assert window.detail.cget("text").startswith("Down 1 mm · moved 1.0 mm · height 221.0 mm")
+    assert board.sensor_mm == pytest.approx(221.0)
+    window.down_button._invoke()
+    settle(window)
+    assert window.status.cget("text") == "2 mm below autofocus height"
+    for _ in range(2):
+        window.up_button._invoke()
+        settle(window)
+    assert window.status.cget("text") == "Back at autofocus height" and window._tone == app.OK
+    assert "beep" not in seen and "motion" not in seen  # silent, and never touches the fault latch
+    window.autofocus()  # the next autofocus aims at the autofocus height as always
+    settle(window)
+    assert board.sensor_mm == pytest.approx(222.0)
+
+
+def test_up_down_buttons_are_locked_while_a_task_runs(window, monkeypatch):
+    seen = []
+    for b in (window.down_button, window.up_button):
+        real = b.set_enabled
+        monkeypatch.setattr(b, "set_enabled", lambda e, real=real: seen.append(e) or real(e))
+    window.up_button._invoke()
+    assert not window.down_button.enabled and not window.up_button.enabled and window.moving
+    window.down_button._invoke()  # disabled: ignored
+    settle(window)
+    assert seen[:2] == [False, False] and window.down_button.enabled and window.up_button.enabled
+    assert board_of(window).sensor_mm == pytest.approx(206.0)  # one press, one move
+
+
+def test_up_down_refusals_warn_without_a_sound_or_a_fault(window, monkeypatch):
+    board = board_of(window)
+    seen = events_of(window, monkeypatch)
+    board.job_running = True
+    try:
+        window.down_button._invoke()
+        settle(window)
+    finally:
+        board.job_running = False
+    assert window.status.cget("text") == "Laser busy" and window._tone == app.WARN
+    assert "between jobs" in window.detail.cget("text")
+    board.sensor_mm = 300.0  # out of the sensor's view
+    window.down_button._invoke()
+    settle(window)
+    assert window.status.cget("text") == "Can't see the work"
+    assert "beep" not in seen and "motion" not in seen and not window.motion_fault
+    assert window.down_button.enabled
+
+
+def test_up_down_busy_from_the_move_itself_is_a_refusal(window, monkeypatch):
+    def busy(self, *a, **k):
+        raise ControllerBusyError("busy")
+
+    monkeypatch.setattr("omni_autofocus.controller.Controller.move_axis", busy)
+    window.down_button._invoke()
+    settle(window)
+    assert window.status.cget("text") == "Laser busy" and "between jobs" in window.detail.cget("text")
+
+
+def test_up_down_stall_latches_the_fault_and_beeps(window, monkeypatch):
+    board = board_of(window)
+    seen = events_of(window, monkeypatch)
+    board.z_pulses_per_mm = 8000  # Z only moves a tenth of what it is told
+    try:
+        window.down_button._invoke()
+        settle(window)
+        assert window.status.cget("text") == "Stopped" and window._tone == app.ERR
+        assert "did not move as asked" in window.detail.cget("text")
+        assert window.motion_fault and "beep" in seen
+    finally:
+        board.z_pulses_per_mm = 800.0
+        window.motion_fault = False
+        window._verified_axis = None
+
+
+def test_up_down_after_a_fault_asks_and_never_clears_it(window, monkeypatch):
+    board = board_of(window)
+    window.motion_fault = True
+    answers = [False, True]
+    asked = []
+    monkeypatch.setattr(window, "_ask_yes_no", lambda q, **kw: asked.append(q) or answers.pop(0))
+    try:
+        window.down_button._invoke()
+        settle(window)
+        assert window.status.cget("text") == "Cancelled" and window.detail.cget("text") == "Z did not move."
+        assert board.sensor_mm == 205.0 and "down 1.0 mm, towards the work" in asked[0]
+        window.down_button._invoke()
+        settle(window)
+        assert board.sensor_mm == pytest.approx(204.0) and len(asked) == 2
+        assert window.motion_fault  # a 1 mm move cannot prove Z works
+    finally:
+        window.motion_fault = False
+
+
+def test_up_down_row_order_and_focus(window, monkeypatch):
+    w = window
+    # Tab follows the stacking (creation) order: Autofocus → Down → Up → lens picker.
+    kids = w.main_part.winfo_children()
+    row = w.down_button.master
+    assert row.winfo_children() == [w.down_button, w.up_button]
+    assert kids.index(w.button) < kids.index(w.hint) < kids.index(row) < kids.index(w.lens_picker.master)
+    from tkinter import messagebox
+
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(app, "_wait_for_keys_released", lambda: None)
+    for asker, back in ((w.up_button, w.up_button), (w.lens_picker._labels["A"], w.button)):
+        monkeypatch.setattr(w.root, "focus_get", lambda asker=asker: asker)
+        focused = []
+        monkeypatch.setattr(back, "focus_set", lambda f=focused: f.append(True))
+        assert REAL_ASK_YES_NO(w, "Move?") is True
+        assert focused, asker
+    w._quiet_until = 0.0
+
+
+def test_up_down_buttons_come_back_after_fine_tuning(window):
+    window.open_fine_tune()
+    window._close_tune()
+    assert window.down_button.enabled and window.up_button.enabled

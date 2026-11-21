@@ -39,7 +39,7 @@ def plan(height_mm: float, settings: Settings) -> FocusPlan:
         raise FocusError(
             f"the focus height for lens {f.lens.upper()} ({target:.1f} mm, offset included) is outside the "
             f"sensor range {f.sensor_min_mm:g}-{f.sensor_max_mm:g} mm; set it in ⋯ → Settings or with "
-            "fine-tuning (command line: set-focus), or check the focus nudge"
+            "fine-tuning (command line: set-focus), or check the autofocus offset"
         )
     move = target - height_mm
     if abs(move) < f.deadband_mm:
@@ -114,6 +114,37 @@ def check_motion(move_mm: float, change_mm: float, *, inverted: bool = False, st
             f"z_axis.invert_direction {str(not inverted).lower()}'"
         )
     raise MotionError(msg + " (stall, end of travel, or wrong z_axis pitch settings)")
+
+
+def checked_move(
+    ctl,
+    params,
+    samples: int,
+    inverted: bool,
+    mm: float,
+    pulses: int,
+    start_mm: float,
+    *,
+    strict: bool = False,
+) -> float:
+    """Move Z ``mm`` (``pulses``), measure again and :func:`check_motion` the change; returns the new
+    height. A refusal before moving (:class:`ControllerBusyError`) passes through; anything that went
+    wrong once Z was told to move is a :class:`MotionError`."""
+    try:
+        ctl.move_axis(params, pulses)
+    except ControllerBusyError:
+        raise  # refused before moving: a job or the framing preview is running
+    except (ControllerError, OSError) as e:  # stall, end of travel, counter mismatch, USB lost mid-move
+        raise MotionError(f"Z did not complete a {mm:+.1f} mm move ({e}). Stopped; check the Z axis") from e
+    try:
+        new_height = ctl.read_height_median(samples)
+    except ControllerError as e:  # e.g. the head left the sensor's range: Z went somewhere unexpected
+        raise MotionError(
+            f"after moving Z {mm:+.1f} mm the sensor could not measure ({e}). Stopped; check where the "
+            "head is and whether z_axis.invert_direction is right"
+        ) from e
+    check_motion(mm, new_height - start_mm, inverted=inverted, strict=strict)
+    return new_height
 
 
 # Waiting for the work to come into view while a person moves Z with the machine's buttons. The
@@ -258,22 +289,7 @@ def run(
 
     def move(mm: float, pulses: int, start_height: float, *, strict: bool = False) -> float:
         nonlocal verified
-        try:
-            ctl.move_axis(params, pulses)
-        except ControllerBusyError:
-            raise  # refused before moving: a job or the framing preview is running
-        except (ControllerError, OSError) as e:  # stall, end of travel, counter mismatch, USB lost mid-move
-            raise MotionError(
-                f"Z did not complete a {mm:+.1f} mm move ({e}). Stopped; check the Z axis"
-            ) from e
-        try:
-            new_height = ctl.read_height_median(samples)
-        except ControllerError as e:  # e.g. the head left the sensor's range: Z went somewhere unexpected
-            raise MotionError(
-                f"after moving Z {mm:+.1f} mm the sensor could not measure ({e}). Stopped; check where the "
-                "head is and whether z_axis.invert_direction is right"
-            ) from e
-        check_motion(mm, new_height - start_height, inverted=inverted, strict=strict)
+        new_height = checked_move(ctl, params, samples, inverted, mm, pulses, start_height, strict=strict)
         verified = verified or abs(mm) >= 1.0
         return new_height
 
@@ -317,3 +333,128 @@ def run(
     target = settings.focus.target_mm
     outcome = Outcome.IN_FOCUS if abs(target - height) <= FOCUS_TOLERANCE_MM else Outcome.NOT_CONVERGED
     return FocusResult(outcome, height, target, tuple(plans), bool(plans), verified)
+
+
+# --- up / down: a one-off, checked 1 mm move from wherever Z is --------------------------------------
+
+UP_DOWN_STEP_MM = 1.0
+UP_DOWN_SAMPLES = 5  # at least this many readings per measurement: one reading wobbles +-0.2 mm
+UP_DOWN_EDGE_MM = 2.0  # stay this far inside the sensor's window, so the move can be measured
+UP_DOWN_IDLE_GAP_S = 0.3  # two "finished" samples this far apart before moving
+# Progress (the measured change the asked way) of a 1 mm move. Starting values: the sensor reads 1 mm
+# moves as 0.9-1.2 mm on the Omni; set from more presses on hardware before relying on them.
+UP_DOWN_STALL_MM = 0.2  # below this, Z did not move
+UP_DOWN_SHORT_MM = 0.6  # below this, it moved less than asked (e.g. lead-screw slack on a reversal)
+UP_DOWN_OVER_MM = 1.7  # above this, Z moved too far (wrong pitch settings)
+
+NO_VIEW = "Up / down needs the sensor to see the work, to check the move. Nothing moved."
+LASER_BUSY = (
+    "Up / down works between jobs, once LightBurn has finished (not while a job runs or is paused). "
+    "For deep engraving, run the passes as separate jobs."
+)
+
+
+class UpDownRefused(FocusError):
+    """Up / down did not move Z: it could not be checked, or the laser was busy. Not a fault."""
+
+    def __init__(self, title: str, message: str):
+        super().__init__(message)
+        self.title = title
+
+
+@dataclass(frozen=True)
+class UpDownResult:
+    kind: str  # "ok", "less" (moved, but less than asked) or "cancelled" (nothing moved)
+    step_mm: float  # what was asked, + = head up
+    start_mm: float  # sensor reading before
+    end_mm: float  # sensor reading after (the start when cancelled)
+    target_mm: float  # the autofocus height for the lens in use
+
+    @property
+    def change_mm(self) -> float:
+        return self.end_mm - self.start_mm
+
+
+def up_down(
+    ctl,
+    settings: Settings,
+    mm: float,
+    *,
+    confirm: Callable[[FocusPlan], bool] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> UpDownResult:
+    """Move Z by ``mm`` (+ = head up, - = head down) from wherever it is,
+    checked with the sensor before and after. Not saved anywhere: the next autofocus goes back.
+
+    Refuses (:class:`UpDownRefused`, nothing moved) when the sensor cannot see the work, when the
+    move would take the head to within :data:`UP_DOWN_EDGE_MM` of the sensor's window (a move back
+    towards the window is always allowed), or when the laser is not finished with a job. ``confirm``
+    is asked first and may say no (kind ``"cancelled"``). Raises :class:`MotionError` when Z did not
+    follow; a move this short can never prove that Z works, so success clears no motion fault.
+    """
+    f = settings.focus
+    n = max(f.samples, UP_DOWN_SAMPLES)
+    params = settings.z_axis.axis_params()
+    pulses = params.mm_to_pulses(mm)
+    target = f.target_mm
+    lo, hi = f.sensor_min_mm + UP_DOWN_EDGE_MM, f.sensor_max_mm - UP_DOWN_EDGE_MM
+
+    def read() -> float:
+        try:
+            h = ctl.read_height_median(n)
+        except SensorNoTargetError as e:
+            raise UpDownRefused("Can't see the work", NO_VIEW) from e
+        if not f.sensor_min_mm <= h <= f.sensor_max_mm:
+            raise UpDownRefused("Can't see the work", NO_VIEW)
+        return h
+
+    def outside(h: float) -> float:  # how far a height is outside [lo, hi]
+        return max(lo - h, h - hi, 0.0)
+
+    def check_room(h: float) -> None:
+        end = h + mm
+        if outside(end) == 0 or outside(end) < outside(h):
+            return  # inside, or back towards the window
+        raise UpDownRefused(
+            "At the sensor's limit",
+            f"Height {h:.1f} mm is near the edge of what the sensor sees ({f.sensor_min_mm:g}–"
+            f"{f.sensor_max_mm:g} mm), so a move that way could not be checked. Nothing moved.",
+        )
+
+    h = read()
+    check_room(h)
+    if confirm is not None:
+        asked = clock()
+        if not confirm(FocusPlan(h, target, mm, pulses)):
+            return UpDownResult("cancelled", mm, h, h, target)
+        if clock() - asked > HUMAN_PAUSE_S:  # a person answered: the head may have been moved meanwhile
+            again = read()
+            if abs(again - h) > RECHECK_MM:
+                raise UpDownRefused(
+                    "Height changed",
+                    f"The height changed while waiting for an answer ({h:.1f} → {again:.1f} mm). Nothing "
+                    "moved; press again.",
+                )
+            h = again
+            check_room(h)
+    # Height reads carry no board state: ask twice, apart, right before moving, so a job that is just
+    # starting (or paused) is not cut off by the move's reset.
+    for i in range(2):
+        if i:
+            sleep(UP_DOWN_IDLE_GAP_S)
+        if not ctl.state().finished_flag:
+            raise UpDownRefused("Laser busy", LASER_BUSY)
+    end = checked_move(ctl, params, n, settings.z_axis.invert_direction, mm, pulses, h)
+    progress = (end - h) * (1 if mm > 0 else -1)
+    asked_for = f"asked for {mm:+.1f} mm, but the sensor reading changed {end - h:+.1f} mm"
+    if progress < UP_DOWN_STALL_MM * abs(mm):
+        raise MotionError(
+            f"Z did not move as asked: {asked_for}. Stalled or at the end of travel; check the Z axis"
+        )
+    if progress > UP_DOWN_OVER_MM * abs(mm):
+        raise MotionError(
+            f"Z moved too far: {asked_for}. Stopped; check the z_axis pitch settings (pulses per mm)"
+        )
+    kind = "less" if progress < UP_DOWN_SHORT_MM * abs(mm) else "ok"
+    return UpDownResult(kind, mm, h, end, target)

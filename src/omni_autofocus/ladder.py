@@ -47,7 +47,7 @@ def best_focus(aimed_mm: float, lowest: float, highest: float) -> tuple[float, f
     ``aimed_mm`` is the height autofocus aims for (the lens's focus height plus ``focus.offset_mm``),
     not the sensor reading after it: that reading wobbles by about 0.2 mm, and the marks are 1 mm
     apart, so the reading would only add noise. Picking 0..0 therefore changes nothing. The offset
-    stays a separate nudge on top of the saved height."""
+    stays a separate offset on top of the saved height."""
     lo, hi = min(lowest, highest), max(lowest, highest)
     centre = (lo + hi) / 2
     return centre, round(aimed_mm + centre, 1)

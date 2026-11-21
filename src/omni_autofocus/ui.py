@@ -213,7 +213,17 @@ class RoundButton(tk.Canvas):
     activate it when it has the focus; ``guard`` can veto an activation (e.g. right after a dialog)."""
 
     def __init__(
-        self, parent, *, text, command, palette: Palette, scale: float, width: int, height: int, guard=None
+        self,
+        parent,
+        *,
+        text,
+        command,
+        palette: Palette,
+        scale: float,
+        width: int,
+        height: int,
+        guard=None,
+        font_size: int = 13,
     ):
         self.p, self.command, self.guard = palette, command, guard
         self.w, self.h, self.r = int(width * scale), int(height * scale), 10 * scale
@@ -224,7 +234,7 @@ class RoundButton(tk.Canvas):
         self._images: dict[tuple[str, bool], tk.PhotoImage] = {}
         self._bg = self.create_image(0, 0, anchor="nw", image=self._image(palette.accent, False))
         self._label = self.create_text(
-            self.w / 2, self.h / 2, text=text, fill=palette.on_accent, font=(FONT, 13, "bold")
+            self.w / 2, self.h / 2, text=text, fill=palette.on_accent, font=(FONT, font_size, "bold")
         )
         self.bind("<Enter>", lambda e: self._set(hover=True))
         self.bind("<Leave>", lambda e: self._set(hover=False, pressed=False))

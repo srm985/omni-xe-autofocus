@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.0 (2026-11-21)
+
+- **Up / down 1 mm:** two buttons under Autofocus, ▼ Down and ▲ Up, move Z 1 mm at once from
+  wherever it is, for a deliberate defocus or going deeper between jobs. Each press is checked with
+  the sensor before and after; the headline shows how far the head is from the autofocus height
+  ("2 mm below autofocus height", "Back at autofocus height"). Nothing is saved: the next
+  Autofocus returns to focus. Works between jobs only (refused while a LightBurn job runs or is
+  paused), keeps the head inside the sensor's 120–280 mm window, and never clears a motion fault.
+- Settings: "Focus nudge (offset)" is now "Autofocus offset (every time)", so it is not confused with
+  Up / Down
+
 ## 1.0.1 (2026-10-04)
 
 - when the sensor cannot see the work, Autofocus explains, waits while you move the head with the

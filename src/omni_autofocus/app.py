@@ -128,6 +128,30 @@ def describe_result(r: autofocus.FocusResult) -> tuple[str, str, str]:
     return "Already in focus", f"Height {r.height_mm:.1f} mm · focus {r.target_mm:.1f} mm", OK
 
 
+def describe_up_down(r: autofocus.UpDownResult) -> tuple[str, str, str]:
+    """(headline, detail, tone) after Up or Down. The headline is measured against the autofocus
+    height in whole mm (every step is 1 mm), so presses add up as expected despite sensor noise."""
+    if r.kind == "cancelled":
+        return "Cancelled", "Z did not move.", INFO
+    asked = f"{'Up' if r.step_mm > 0 else 'Down'} {abs(r.step_mm):g} mm"
+    moved = f"moved {abs(r.change_mm):.1f} mm · height {r.end_mm:.1f} mm"
+    if r.kind == "less":
+        return (
+            "Moved less than asked",
+            f"{asked} asked, but Z {moved}. Use ⋯ → Check height, or press Autofocus.",
+            WARN,
+        )
+    d = r.end_mm - r.target_mm
+    n = int(abs(d) + 0.5)  # not round(): that rounds halves to even
+    if n == 0:
+        return "Back at autofocus height", f"{asked} · {moved}.", OK
+    return (
+        f"{n} mm {'above' if d > 0 else 'below'} autofocus height",
+        f"{asked} · {moved}. Autofocus returns to focus.",
+        WARN,
+    )
+
+
 def lens_summary(
     choice: str, why: str, target_mm: float | None, focus: config.FocusSettings | None = None
 ) -> str:
@@ -412,6 +436,23 @@ class App:
         self._jog_max: float | None = None
         self.hint = tk.Label(main, text=" ", bg=p.bg, fg=p.muted, font=(font, 9), wraplength=wrap)
         self.hint.pack()
+        # Up / down: a one-off 1 mm move from wherever Z is. Secondary to Autofocus: shorter, smaller
+        # text. Made here, so Tab goes Autofocus → Down → Up → lens.
+        step = autofocus.UP_DOWN_STEP_MM
+        gap = 8
+        half = (self.WIDTH - gap) // 2
+        step_row = tk.Frame(main, bg=p.bg)
+        step_row.pack(fill="x", pady=(int(8 * sc), 0))
+        self.down_button = ui.RoundButton(
+            step_row, text=f"▼ Down {step:g} mm", command=lambda: self.up_down(-step), palette=p,
+            scale=sc, width=half, height=34, guard=self._key_allowed, font_size=11,
+        )  # fmt: skip
+        self.down_button.pack(side="left")
+        self.up_button = ui.RoundButton(
+            step_row, text=f"▲ Up {step:g} mm", command=lambda: self.up_down(step), palette=p,
+            scale=sc, width=half, height=34, guard=self._key_allowed, font_size=11,
+        )  # fmt: skip
+        self.up_button.pack(side="right")
 
         tk.Frame(main, bg=p.border, height=1).pack(fill="x", pady=(int(14 * sc), int(12 * sc)))
         row = tk.Frame(main, bg=p.bg)
@@ -581,6 +622,8 @@ class App:
         self.moving = moves
         self.button.set_enabled(False)
         self.t_button.set_enabled(False)
+        self.down_button.set_enabled(False)
+        self.up_button.set_enabled(False)
         if moves:
             self.lens_picker.set_enabled(False)
         self._set_dot(BUSY)
@@ -748,6 +791,8 @@ class App:
             self.button.set_text("Autofocus")
             self.jog.pack_forget()
             self.button.set_enabled(True)
+            self.down_button.set_enabled(True)
+            self.up_button.set_enabled(True)
             self.lens_picker.set_enabled(True)
             self._set_dot(self._tone)
             self.t_button.set_enabled(True)
@@ -803,6 +848,10 @@ class App:
     def _ask_yes_no(self, question: str, *, default: str = "no") -> bool:
         from tkinter import messagebox
 
+        try:
+            prev = self.root.focus_get()
+        except KeyError:  # focus in a widget tkinter does not know (e.g. a popup menu)
+            prev = None
         self.root.deiconify()
         self.root.lift()
         _wait_for_keys_released()  # a held or repeated key must not answer the question unseen
@@ -810,7 +859,9 @@ class App:
             return messagebox.askyesno(self.title, question, parent=self.root, default=default)
         finally:
             self._quiet_until = time.monotonic() + self.QUIET_AFTER_DIALOG_S
-            self.button.focus_set()
+            # Back to Up or Down if one of them asked, so Space keeps meaning that; else Autofocus.
+            keep = prev in (self.down_button, self.up_button)
+            (prev if keep else self.button).focus_set()
 
     def _set_status(self, text: str, tone: str = INFO) -> None:
         p = self.palette
@@ -941,6 +992,34 @@ class App:
         if shown:  # the panel stays up, saying autofocus has taken over, until it finishes
             self._post("continuing")
 
+    def up_down(self, mm: float) -> None:
+        if self.waiting:
+            return  # Autofocus is waiting for the work to come into view; its button reads Cancel
+        self._start(self._up_down, mm, moves=True)
+
+    def _up_down(self, mm: float) -> None:
+        note = self._session.check_other_software()
+        self._post("status", f"Moving {'up' if mm > 0 else 'down'} {abs(mm):g} mm…", BUSY)
+        self._post("detail", note or "Reading the height sensor…")
+        s = self._settings()
+        dev, ctl = self._session.open()
+        try:
+            with dev:
+                r = autofocus.up_down(ctl, s, mm, confirm=self._confirmer(s))
+        except autofocus.UpDownRefused as e:  # nothing moved, and not a fault: no sound, no latch
+            self._post("status", e.title, WARN)
+            self._post("detail", str(e))
+            return
+        except ControllerBusyError:  # the move's own check, right before moving
+            self._post("status", "Laser busy", WARN)
+            self._post("detail", autofocus.LASER_BUSY)
+            return
+        # A MotionError goes on to _work: it latches the fault, shows it and beeps. A 1 mm move that
+        # checks out never clears a fault (too short to prove Z works).
+        headline, detail, tone = describe_up_down(r)
+        self._post("status", headline, tone)
+        self._post("detail", detail)
+
     def check_height(self) -> None:
         self._start(self._check_height)
 
@@ -1062,7 +1141,8 @@ class App:
                 log.debug("closing the laser failed", exc_info=True)
         self.tune_part.pack_forget()
         self.main_part.pack(fill="x")
-        self.button.set_enabled(not self.busy)
+        for b in (self.button, self.down_button, self.up_button):
+            b.set_enabled(not self.busy)
         self.button.focus_set()
 
     def _tune_render(self) -> None:
@@ -1388,7 +1468,7 @@ class App:
 
         heading("BEHAVIOR")
         self.s_hotkey = field("Hotkey", 18, hint="empty = off", justify="left")
-        self.s_offset = field("Focus nudge (offset)", 6, unit="mm")
+        self.s_offset = field("Autofocus offset (every time)", 6, unit="mm")
         self.s_sounds = tk.BooleanVar(value=True)
         check("Sound when autofocus finishes", self.s_sounds)
 
@@ -1540,7 +1620,7 @@ class App:
         names = {
             "focus.target_a_mm": "Focus height " + lens_name("A", base.focus),
             "focus.target_b_mm": "Focus height " + lens_name("B", base.focus),
-            "focus.offset_mm": "Focus nudge",
+            "focus.offset_mm": "Autofocus offset",
             "app.hotkey": "Hotkey",
             "app.sounds": "Sound",
             "z_axis.invert_direction": "Z direction",
@@ -1562,15 +1642,15 @@ class App:
                 changed.add(key)
             f = s.focus
             for letter, key in (("A", "target_a_mm"), ("B", "target_b_mm")):
-                # Check a height that was edited, or a real one when the nudge changed. A placeholder for
+                # Check a height that was edited, or a real one when the offset changed. A placeholder for
                 # an unfitted lens (e.g. 0 from the laser) is left alone.
                 value = getattr(f, key)
                 in_use = f.sensor_min_mm <= value <= f.sensor_max_mm
                 if f"focus.{key}" in changed or (in_use and "focus.offset_mm" in changed):
                     if not f.sensor_min_mm <= value + f.offset_mm <= f.sensor_max_mm:
-                        nudge = f" with the {f.offset_mm:+g} mm nudge" if f.offset_mm else ""
+                        offset = f" with the {f.offset_mm:+g} mm autofocus offset" if f.offset_mm else ""
                         raise ValueError(
-                            f"the {lens_name(letter, f)} focus height{nudge} must stay between "
+                            f"the {lens_name(letter, f)} focus height{offset} must stay between "
                             f"{f.sensor_min_mm:g} and {f.sensor_max_mm:g} mm (a sensor reading, not a "
                             "distance to the work)"
                         )
@@ -1629,15 +1709,15 @@ class App:
         with dev:
             h = ctl.read_height_median(max(current.focus.samples, 5))
         name = lens_name(letter, current.focus)
-        nudge = (
-            f" The focus nudge ({current.focus.offset_mm:+g} mm) is still added on top."
+        offset = (
+            f" The autofocus offset ({current.focus.offset_mm:+g} mm) is still added on top."
             if current.focus.offset_mm
             else ""
         )
         self._post(
             "settings_value", letter, f"{h:.1f}",
             f"Measured {h:.1f} mm. Use it only with the {name} lens fitted and Z at its best focus; then "
-            f"Save.{nudge}",
+            f"Save.{offset}",
         )  # fmt: skip
 
     def _read_factory(self, letter: str) -> None:

@@ -3,4 +3,4 @@
 See docs/protocol.md for the controller protocol.
 """
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
